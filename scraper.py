@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 import feedparser
 import httpx
+import re
 
 # ── config ──────────────────────────────────────────────────────────
 SOURCES_FILE = os.path.join(os.path.dirname(__file__), "sources.json")
@@ -87,15 +88,37 @@ def parse_entry(entry, source_name: str) -> dict:
         "title":       entry.get("title", "").strip(),
         "url":         entry.get("link", "").strip(),
         "published":   date_str,
-        "summary":     strip_html(summary).strip()[:500],   # first 500 chars
+        "summary":     clean_summary(strip_html(summary).strip())[:500],   # first 500 chars
         "source":      source_name,
     }
 
 
 def strip_html(text: str) -> str:
     """Remove HTML tags (best-effort)."""
-    import re
     return re.sub(r"<[^>]*>", "", text).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+
+
+# Patterns that indicate WordPress/RSS boilerplate to strip from summaries
+_BOILERPLATE_PATTERNS = [
+    # English WordPress footers
+    re.compile(r"\s*The\s+post\s+.+?\s+first\s+appeared\s+on\s+.+?\.?\s*$", re.IGNORECASE),
+    # Russian WordPress footers
+    re.compile(r"\s*Сообщение\s+.+?\s+появились\s+сначала\s+на\s+.+?\.?\s*$", re.IGNORECASE),
+    # "Читать далее" / "Read more" + duplicated text
+    re.compile(r"\s*Читать\s+(далее|полностью)[….]*\s*$", re.IGNORECASE),
+    re.compile(r"\s*Read\s+more[….]*\s*$", re.IGNORECASE),
+    # "Source:" / "Источник:" footers
+    re.compile(r"\s*(Source|Источник)\s*:.*$", re.IGNORECASE),
+    # Trailing "→"/"»" that's just a link marker
+    re.compile(r"\s*[→»]\s*$"),
+]
+
+
+def clean_summary(text: str) -> str:
+    """Strip WordPress/RSS boilerplate footers from summary text."""
+    for pat in _BOILERPLATE_PATTERNS:
+        text = pat.sub("", text)
+    return text.strip()
 
 
 def is_within_window(date_str: str | None, window_hours: int = DATE_WINDOW_HOURS) -> bool:

@@ -66,12 +66,69 @@ IMPORTANCE_KEYWORDS = {
     6:  [r"\bспорт\b", r"чемпионат", r"технологи", r"наук", r"космическ"],
 }
 
+# Patterns that DISQUALIFY a category match — when these are found in context,
+# the given category gets a strong score penalty (to fix first-match false positives).
+# Format: (regex, category_to_penalize)
+CATEGORY_DISQUALIFIERS = [
+    # "премьер" alone → культура, but "премьер-министр" is политика
+    (r"премьер[-\s]министр", "культура"),
+    # "опер[аы]" → культура, but "операци" (military operation) should NOT match
+    (r"операци", "культура"),
+    # "авто" (car) in context of war/politics → not technology
+    (r"\bавто\b.*(?:войн|фронт|боев|оружи|арми|иран|конфликт)", "технологии"),
+]
+
+
 def classify(title: str, summary: str) -> str:
-    text = f"{title} {summary}".lower()
+    """Score-based classification with disambiguation.
+
+    Counts pattern matches per category (not first-match-wins).
+    Title-only matches get extra weight.
+    Disqualifier patterns subtract from category scores.
+    """
+    title_lower = title.lower()
+    summary_lower = summary.lower() if summary else ""
+    full_text = f"{title_lower} {summary_lower}"
+
+    # Init scores for all categories
+    scores: dict[str, int] = {}
+    for _, cat in CATEGORY_RULES:
+        scores.setdefault(cat, 0)
+
+    # Count matches — title matches get double weight
     for pattern, cat in CATEGORY_RULES:
-        if re.search(pattern, text):
-            return cat
-    return "прочее"
+        full_hits = len(re.findall(pattern, full_text))
+        title_hits = len(re.findall(pattern, title_lower))
+        scores[cat] += full_hits + title_hits  # title counted twice (once in full, once extra)
+
+    # Penalize disqualified categories
+    for pattern, cat_to_penalize in CATEGORY_DISQUALIFIERS:
+        if re.search(pattern, full_text):
+            scores[cat_to_penalize] -= 3
+
+    if not scores:
+        return "прочее"
+
+    # Best category by score
+    best_cat = max(scores, key=lambda c: scores[c])
+    best_score = scores[best_cat]
+
+    if best_score <= 0:
+        return "прочее"
+
+    # Tiebreaker: prefer category with more title-only matches
+    sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    if len(sorted_items) >= 2 and sorted_items[1][1] == best_score:
+        tied_cats = [c for c, s in scores.items() if s == best_score]
+        title_scores: dict[str, int] = {}
+        for pattern, cat in CATEGORY_RULES:
+            title_scores[cat] = title_scores.get(cat, 0) + len(re.findall(pattern, title_lower))
+        best_tied = max(tied_cats, key=lambda c: title_scores.get(c, 0))
+        if title_scores.get(best_tied, 0) > 0:
+            return best_tied
+        return "прочее"
+
+    return best_cat
 
 def calc_importance(title: str, summary: str) -> int:
     text = f"{title} {summary}".lower()
@@ -122,26 +179,40 @@ def make_short_summary(title: str, summary: str) -> str:
         sentence_end = -1
         for cut in (MAX_LEN, MAX_LEN + 40):
             substr = s[:cut]
-            # Scan right-to-left for best sentence boundary
+            # Scan right-to-left for best sentence boundary (sep + space)
             for sep in ("? ", "! ", ". ", "… "):
                 pos = substr.rfind(sep)
                 if pos > 40 and pos > sentence_end:
                     sentence_end = pos + 1  # include the punctuation
-            # Also check if the cut is already at a sentence end (at EOS)
+            # Also check if the cut itself lands at a sentence end
             if sentence_end < 0:
                 for sep in ("?", "!", ".", "…"):
-                    if substr.rstrip() == s[:len(substr.rstrip())] and s[:cut].rstrip().endswith(sep):
-                        sentence_end = len(substr.rstrip())
-                        break
+                    stripped = substr.rstrip()
+                    if stripped.endswith(sep):
+                        pos = len(stripped)
+                        # Verify word boundary: next char must be space or EOS
+                        if pos >= len(s) or (pos < len(s) and s[pos] == " "):
+                            sentence_end = pos
+                            break
             if sentence_end > 40:
-                return s[:sentence_end].strip()
+                result = s[:sentence_end].strip()
+                # Guard: if cutting at sentence boundary produces < 40 chars,
+                # fall through to word-boundary fallback for a longer chunk
+                if len(result) >= 40:
+                    return result
 
         # Fallback: cut at MAX_LEN, back up to a word boundary
         truncated = s[:MAX_LEN].rstrip()
         last_space = truncated.rfind(" ")
-        if last_space > 60:
-            return truncated[:last_space] + "…"
-        return truncated + "…"
+        if last_space >= 0:
+            result = truncated[:last_space] + "…"
+        else:
+            result = truncated + "…"
+
+        # Minimum-length guard: if truncated result < 30 chars, fall back to title
+        if len(result) >= 30:
+            return result
+        # Fall through to title-based fallback below
 
     # No summary — generate from title
     t = title.strip().rstrip(".").rstrip("…")

@@ -11,6 +11,8 @@ Exit codes:
   2 — critical (pipeline likely broken, outputs unusable)
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
@@ -239,6 +241,68 @@ def check_digest_md(path: str) -> dict:
     return result
 
 
+def check_pipeline_status() -> dict:
+    """Check pipeline_status.json (written by run.sh) for step-level failures."""
+    status_path = os.path.join(HERE, "pipeline_status.json")
+    result = {"file": status_path, "status": "unknown", "issues": [], "details": {}}
+
+    data, err = load_json(status_path)
+    if err:
+        if "file not found" in err:
+            # No status file — pipeline hasn't run yet
+            result["status"] = "warning"
+            result["issues"].append(("warning", "pipeline_status.json: not found — pipeline may not have run yet"))
+            result["details"]["note"] = "status file doesn't exist yet"
+            return result
+        result["status"] = "critical"
+        result["issues"].append(f"pipeline_status.json: {err}")
+        return result
+
+    if data is None:  # defensive — shouldn't happen if no err
+        result["status"] = "critical"
+        result["issues"].append("pipeline_status.json: loaded but data is null")
+        return result
+
+    overall = data.get("overall", "unknown")
+    total = data.get("total_steps", 0)
+    failed_count = data.get("failed_count", 0)
+    failed_steps = data.get("failed_steps", [])
+    steps = data.get("steps", [])
+
+    result["details"] = {
+        "overall": overall,
+        "total_steps": total,
+        "failed_count": failed_count,
+        "pipeline_run_at": data.get("pipeline_run_at"),
+    }
+
+    issues = []
+
+    if failed_count > 0:
+        for step in steps:
+            if step.get("status") == "failed" or step.get("exit_code", 0) != 0:
+                step_name = step.get("step", "unknown")
+                exit_code = step.get("exit_code", "?")
+                desc = step.get("description", "")
+                issues.append(("critical",
+                    f"step '{step_name}' failed (exit {exit_code}): {desc}"))
+
+        # Also include human-friendly failed steps list
+        if failed_steps:
+            result["details"]["failed_steps"] = failed_steps
+
+    elif total > 0 and overall == "ok":
+        # All steps passed
+        result["details"]["all_steps_passed"] = True
+
+    if not steps and not err:
+        issues.append(("warning", "pipeline_status.json has no step records"))
+
+    result["issues"] = issues
+    result["status"] = derive_status(issues)
+    return result
+
+
 def check_pipeline_log() -> dict:
     """Check pipeline.log for recent errors."""
     log_path = os.path.join(HERE, "pipeline.log")
@@ -306,6 +370,9 @@ def main():
     # Log file
     checks["pipeline_log"] = check_pipeline_log()
 
+    # Pipeline step-level status (from run.sh's pipeline_status.json)
+    checks["pipeline_status"] = check_pipeline_status()
+
     # Determine overall status
     statuses = [c["status"] for c in checks.values()]
     if "critical" in statuses:
@@ -340,6 +407,7 @@ def main():
         for name, check in checks.items():
             icon = {"healthy": "✅", "warning": "⚠️", "critical": "❌"}[check["status"]]
             desc = {
+                "pipeline_status": "Pipeline steps",
                 "raw_news": "RSS scraper",
                 "analyzed_news": "Dedup & analysis",
                 "digest_json": "Digest JSON",
