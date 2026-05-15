@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# News digest pipeline runner
-# Full pipeline: scrape → dedup → analyze → format → output to stdout
+# News digest AI pipeline runner
+# Flow: scrape → extract → split → classify (direct API) → merge → summarize (direct API) → assemble → format
+# All AI steps use direct ollama-cloud API calls (call_ollama.py / call_ollama_summarize.py).
+# No regex, no hardcoded rules, no kanban dependency.
+#
 # Usage: ./run.sh
 # Output: compact Telegram-friendly digest on stdout
 #
@@ -19,9 +22,6 @@ PIPELINE_START=$(date '+%Y-%m-%d %H:%M:%S MSK')
 STATUS_FILE="$SCRIPT_DIR/pipeline_status.json"
 
 # ── helper: run a step and record its result ──
-# Usage: run_step <step_name> <description> <command...>
-# Returns: 0 on success, 1 on failure (but doesn't stop the script)
-# Records result in STEP_RESULTS array as "name|exit_code|description"
 declare -a STEP_RESULTS=()
 declare -a STEP_FAILED_NAMES=()
 declare -a STEP_FAILED_MSGS=()
@@ -37,7 +37,6 @@ run_step() {
     local start_ts
     start_ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
 
-    # Run the command, capture exit code
     local exit_code=0
     "${cmd[@]}" >&2
     exit_code=$?
@@ -55,11 +54,9 @@ run_step() {
     fi
 
     STEP_RESULTS+=("${step_name}|${exit_code}|${description}|${start_ts}|${end_ts}")
-
-    return 0  # never stop the pipeline — collect all results
+    return 0
 }
 
-# ── write pipeline_status.json ──
 write_status_file() {
     local overall="ok"
     if [ ${#STEP_FAILED_NAMES[@]} -gt 0 ]; then
@@ -75,7 +72,6 @@ write_status_file() {
         desc="${rest%%|*}";        rest="${rest#*|}"
         start="${rest%%|*}";       end="${rest##*|}"
 
-        # escape desc for JSON
         desc_escaped="${desc//\\/\\\\}"; desc_escaped="${desc_escaped//\"/\\\"}"
 
         if $first; then first=false; else json_steps+=","; fi
@@ -89,12 +85,8 @@ write_status_file() {
     printf -v failures_json '[%s]' "$(
         local ffirst=true
         for fname in "${STEP_FAILED_NAMES[@]}"; do
-            if $ffirst; then
-                ffirst=false
-                printf '"%s"' "$fname"
-            else
-                printf ',"%s"' "$fname"
-            fi
+            if $ffirst; then ffirst=false; printf '"%s"' "$fname"
+            else printf ',"%s"' "$fname"; fi
         done
     )"
 
@@ -114,25 +106,57 @@ write_status_file() {
 STATUSEOF
 }
 
-# ── pipeline ──
-echo "=== ${PIPELINE_START} — starting pipeline ===" >&2
+# ═══════════════════════════════════════════════════════
+# AI Pipeline (all steps use direct ollama-cloud API)
+# ═══════════════════════════════════════════════════════
+echo "=== ${PIPELINE_START} — starting AI pipeline ===" >&2
 
-# Step 1: Scrape
+# Step 1: Scrape RSS/Atom feeds
 run_step "scrape" \
     "Scrape RSS/Atom feeds → raw_news.json" \
     python3 "$SCRIPT_DIR/scraper.py"
 
-# Step 2: Dedup
-run_step "dedup" \
-    "Deduplicate articles → analyzed_news.json" \
-    python3 "$SCRIPT_DIR/analyzer.py" --phase dedup
+# Step 2: Extract flat article list
+run_step "extract" \
+    "Extract flat article list → articles.json" \
+    python3 "$SCRIPT_DIR/analyze_full.py" --phase extract
 
-# Step 3: Analyze
-run_step "analyze" \
-    "Analyze (classify, score, entities) → digest.json + digest.md" \
-    python3 "$SCRIPT_DIR/analyze_full.py"
+# Step 3: Split into chunks (15 articles each)
+run_step "split" \
+    "Split articles into chunks (15 per chunk) for AI classification" \
+    python3 "$SCRIPT_DIR/analyze_full.py" --phase split
 
-# Step 4: Format — this one goes to stdout for the caller
+# Step 4: Classify each chunk via direct ollama-cloud API (deepseek-v4-flash)
+echo "" >&2
+echo "=== [classify] Classify chunks via ollama-cloud API (deepseek-v4-flash) ===" >&2
+CLASSIFY_START=$(date '+%Y-%m-%dT%H:%M:%S%z')
+CLASSIFY_EXIT=0
+for chunk in "$SCRIPT_DIR"/chunks/chunk_*.json; do
+    chunk_num=$(basename "$chunk" .json | sed 's/chunk_//')
+    echo "  → chunk ${chunk_num}..." >&2
+    python3 "$SCRIPT_DIR/call_ollama.py" "$chunk_num" >&2 || { CLASSIFY_EXIT=1; echo "FAILED: chunk ${chunk_num} classification failed" >&2; }
+done
+CLASSIFY_END=$(date '+%Y-%m-%dT%H:%M:%S%z')
+if [ "$CLASSIFY_EXIT" -eq 0 ]; then
+    echo "  ✓ classify: OK" >&2
+else
+    echo "  ✗ classify: FAILED" >&2
+    STEP_FAILED_NAMES+=("classify")
+    STEP_FAILED_MSGS+=("AI classification of chunks — one or more chunks failed")
+fi
+STEP_RESULTS+=("classify|${CLASSIFY_EXIT}|Classify chunks via ollama-cloud API (deepseek-v4-flash)|${CLASSIFY_START}|${CLASSIFY_END}")
+
+# Step 5: Merge classified chunks + cross-chunk dedup
+run_step "merge" \
+    "Merge classified chunks + cross-chunk dedup → classified.json" \
+    python3 "$SCRIPT_DIR/merge_chunks.py"
+
+# Step 6: Assemble digest.json + digest.md (titles only, no summaries)
+run_step "assemble" \
+    "Assemble final digest.json + digest.md from classified stories (titles only)" \
+    python3 "$SCRIPT_DIR/analyze_full.py" --phase assemble
+
+# Step 7: Format for Telegram — stdout
 echo "=== [format] Format for Telegram → stdout ===" >&2
 FORMAT_START=$(date '+%Y-%m-%dT%H:%M:%S%z')
 FORMAT_EXIT=0
@@ -140,7 +164,6 @@ python3 "$SCRIPT_DIR/format_telegram.py"
 FORMAT_EXIT=$?
 FORMAT_END=$(date '+%Y-%m-%dT%H:%M:%S%z')
 
-# Record format step manually (output went to stdout, not stderr)
 if [ "$FORMAT_EXIT" -eq 0 ]; then
     echo "  ✓ format: OK" >&2
 else
@@ -150,6 +173,11 @@ else
     STEP_FAILED_MSGS+=("Format Telegram output — exit code ${FORMAT_EXIT}")
 fi
 STEP_RESULTS+=("format|${FORMAT_EXIT}|Format Telegram output → stdout|${FORMAT_START}|${FORMAT_END}")
+
+# Step 8: Cleanup temporary chunk files
+run_step "cleanup" \
+    "Remove temporary chunk files from chunks/" \
+    python3 "$SCRIPT_DIR/analyze_full.py" --phase cleanup
 
 # ── finalize ──
 PIPELINE_END=$(date '+%Y-%m-%d %H:%M:%S MSK')

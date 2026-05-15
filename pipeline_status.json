@@ -1,0 +1,9 @@
+{
+  "pipeline_run_at": "2026-05-15T14:34:12Z",
+  "pipeline_start_local": "2026-05-15 17:27:28 MSK",
+  "overall": "failed",
+  "total_steps": 8,
+  "failed_count": 2,
+  "failed_steps": ["scrape","classify"],
+  "steps": [{"step":"scrape","exit_code":1,"description":"Scrape RSS/Atom feeds → raw_news.json","started":"2026-05-15T17:27:28+0300","finished":"2026-05-15T17:27:29+0300","status":"failed"},{"step":"extract","exit_code":0,"description":"Extract flat article list → articles.json","started":"2026-05-15T17:27:29+0300","finished":"2026-05-15T17:27:29+0300","status":"ok"},{"step":"split","exit_code":0,"description":"Split articles into chunks (15 per chunk) for AI classification","started":"2026-05-15T17:27:29+0300","finished":"2026-05-15T17:27:29+0300","status":"ok"},{"step":"classify","exit_code":1,"description":"Classify chunks via ollama-cloud API (deepseek-v4-flash)","started":"2026-05-15T17:27:29+0300","finished":"2026-05-15T17:34:12+0300","status":"failed"},{"step":"merge","exit_code":0,"description":"Merge classified chunks + cross-chunk dedup → classified.json","started":"2026-05-15T17:34:12+0300","finished":"2026-05-15T17:34:12+0300","status":"ok"},{"step":"assemble","exit_code":0,"description":"Assemble final digest.json + digest.md from classified stories (titles only)","started":"2026-05-15T17:34:12+0300","finished":"2026-05-15T17:34:12+0300","status":"ok"},{"step":"format","exit_code":0,"description":"Format Telegram output → stdout","started":"2026-05-15T17:34:12+0300","finished":"2026-05-15T17:34:12+0300","status":"ok"},{"step":"cleanup","exit_code":0,"description":"Remove temporary chunk files from chunks/","started":"2026-05-15T17:34:12+0300","finished":"2026-05-15T17:34:12+0300","status":"ok"}]
+}
