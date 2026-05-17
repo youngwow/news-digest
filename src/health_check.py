@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from utils import CONFIG, DATA_DIR
 
@@ -294,7 +294,7 @@ def check_pipeline_log() -> dict:
 
     # Check last 50 lines for FAILED markers
     recent = lines[-50:] if len(lines) > 50 else lines
-    failed_lines = [l for l in recent if "FAILED" in l]
+    failed_lines = [line for line in recent if "FAILED" in line]
     if failed_lines:
         result["issues"].append(("warning", f"{len(failed_lines)} FAILED markers in last 50 log lines"))
         result["details"]["recent_failures"] = len(failed_lines)

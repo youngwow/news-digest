@@ -6,17 +6,15 @@ deduplicates by URL, and writes raw_news.json.
 """
 
 import json
-import logging
 import os
-import sys
-import time
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import feedparser
 import httpx
-import re
 
-from utils import CONFIG, DATA_DIR
+from utils import CONFIG, DATA_DIR, get_logger
 
 # ── config ──────────────────────────────────────────────────────────
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,12 +27,7 @@ MAX_REDIRECTS     = _scraper["max_redirects"]
 DATE_WINDOW_HOURS = _scraper["date_window_hours"]
 USER_AGENT        = _scraper["user_agent"]
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-log = logging.getLogger("scraper")
+log = get_logger("scraper")
 
 
 # ── helpers ─────────────────────────────────────────────────────────
@@ -48,27 +41,25 @@ def load_sources(path: str) -> list[dict]:
     return data.get("sources", [])
 
 
-def fetch_feed(client: httpx.Client, url: str) -> str | None:
+def fetch_feed(client: httpx.Client, name: str, url: str) -> str | None:
     """Fetch RSS/Atom feed content. Returns raw XML or None on failure."""
     try:
         resp = client.get(url, follow_redirects=True)
         resp.raise_for_status()
     except httpx.TimeoutException:
-        log.warning("Timeout fetching %s", url)
+        log.warning("Timeout fetching %s (%s)", name, url)
         return None
     except httpx.HTTPStatusError as e:
-        log.warning("HTTP %s fetching %s", e.response.status_code, url)
+        log.warning("HTTP %s fetching %s (%s)", e.response.status_code, name, url)
         return None
     except httpx.RequestError as e:
-        log.warning("Request error for %s: %s", url, e)
+        log.warning("Request error for %s (%s): %s", name, url, e)
         return None
 
     content_type = resp.headers.get("content-type", "")
-    # Reject non-XML / non-RSS responses (some sites return HTML on error)
     if "xml" not in content_type and "rss" not in content_type and "atom" not in content_type:
-        # Many feeds serve as text/xml; also accept missing content-type
         if content_type and "html" in content_type:
-            log.warning("Skipping %s — got HTML instead of feed (content-type: %s)", url, content_type)
+            log.warning("Skipping %s — got HTML instead of feed (content-type: %s)", name, content_type)
             return None
 
     return resp.text
@@ -183,43 +174,50 @@ def main() -> None:
     success_count = 0
     fail_count = 0
 
+    valid_sources = [s for s in sources if s.get("rss")]
+    for s in sources:
+        if not s.get("rss"):
+            log.warning("Skipping %s — no RSS URL", s.get("name", "unknown"))
+
     with httpx.Client(
         timeout=REQUEST_TIMEOUT,
         max_redirects=MAX_REDIRECTS,
         headers={"User-Agent": USER_AGENT},
     ) as client:
-        for src in sources:
-            name = src.get("name", "unknown")
-            url  = src.get("rss", "")
-            if not url:
-                log.warning("Skipping %s — no RSS URL", name)
-                continue
-
-            log.info("Fetching %s (%s)", name, url)
-            xml = fetch_feed(client, url)
-            if xml is None:
-                fail_count += 1
-                continue
-
-            feed = feedparser.parse(xml)
-            if feed.bozo and not feed.entries:
-                log.warning("Bozo feed for %s: %s", name, feed.bozo_exception)
-                fail_count += 1
-                continue
-            if feed.bozo:
-                log.info("%s: feedparser warning (bozo) but entries exist — using them", name)
-
-            for entry in feed.entries:
-                article = parse_entry(entry, name)
-                if not article["url"]:   # skip entries with no link
+        with ThreadPoolExecutor(max_workers=min(10, len(valid_sources) or 1)) as pool:
+            futures = {
+                pool.submit(fetch_feed, client, s["name"], s["rss"]): s
+                for s in valid_sources
+            }
+            for fut in as_completed(futures):
+                src = futures[fut]
+                name = src.get("name", "unknown")
+                xml = fut.result()
+                if xml is None:
+                    fail_count += 1
                     continue
-                if is_boilerplate(article):
-                    log.info("  → boilerplate skipped: %s", article["url"])
-                    continue
-                articles.append(article)
 
-            success_count += 1
-            log.info("  → %s: %d entries", name, len(feed.entries))
+                feed = feedparser.parse(xml)
+                if feed.bozo and not feed.entries:
+                    log.warning("Bozo feed for %s: %s", name, feed.bozo_exception)
+                    fail_count += 1
+                    continue
+                if feed.bozo:
+                    log.info("%s: feedparser warning (bozo) but entries exist — using them", name)
+
+                kept = 0
+                for entry in feed.entries:
+                    article = parse_entry(entry, name)
+                    if not article["url"]:
+                        continue
+                    if is_boilerplate(article):
+                        log.info("  → boilerplate skipped: %s", article["url"])
+                        continue
+                    articles.append(article)
+                    kept += 1
+
+                success_count += 1
+                log.info("  → %s: %d entries (%d kept)", name, len(feed.entries), kept)
 
     log.info("Fetched %d articles from %d sources (%d failed)",
              len(articles), success_count, fail_count)

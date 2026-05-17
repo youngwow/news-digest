@@ -7,13 +7,15 @@ import json
 import os
 from datetime import datetime, timezone
 
-from utils import CONFIG, DATA_DIR
+from utils import CONFIG, DATA_DIR, get_logger
 
 CHUNKS_DIR = os.path.join(DATA_DIR, "chunks")
 _dedup = CONFIG["dedup"]
 OVERLAP_THRESHOLD   = _dedup["overlap_threshold"]
 SHARED_WORDS_MIN    = _dedup["shared_words_min"]
 CONTAINMENT_MIN_LEN = _dedup["containment_min_len"]
+
+log = get_logger("merge_chunks")
 
 
 def title_words(title: str) -> set[str]:
@@ -97,18 +99,19 @@ def main() -> None:
         if not os.path.exists(input_path):
             break
         if not os.path.exists(path):
-            print(f"  chunk_{i}: SKIPPED (classified not found — API failure)")
+            log.warning("chunk_%d: SKIPPED (classified output missing — API failure)", i)
             continue
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        all_stories.extend(data.get("stories", []))
-        print(f"  chunk_{i}: {len(data.get('stories', []))} stories")
+        chunk_stories = data.get("stories", [])
+        all_stories.extend(chunk_stories)
+        log.info("chunk_%d: %d stories", i, len(chunk_stories))
 
     raw_count = len(all_stories)
-    print(f"\nRaw merge: {raw_count} stories")
+    log.info("Raw merge: %d stories", raw_count)
 
     deduped = dedup_stories(all_stories)
-    print(f"After dedup: {len(deduped)} stories (removed {raw_count - len(deduped)} duplicates)")
+    log.info("After dedup: %d stories (removed %d duplicates)", len(deduped), raw_count - len(deduped))
 
     out_path = os.path.join(DATA_DIR, "classified.json")
     with open(out_path, "w", encoding="utf-8") as f:
@@ -118,7 +121,7 @@ def main() -> None:
             "stories": deduped,
         }, f, ensure_ascii=False, indent=2)
 
-    print(f"Wrote {len(deduped)} stories → {out_path}")
+    log.info("Wrote %d stories → %s", len(deduped), out_path)
 
 
 if __name__ == "__main__":

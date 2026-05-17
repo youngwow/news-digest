@@ -1,11 +1,23 @@
 [project]
 name = "news-digest"
+version = "0.2.0"
+description = "Russian-language news digest pipeline (RSS → LLM classify → Telegram)."
 requires-python = ">=3.11"
 dependencies = [
     "feedparser>=6.0.0",
     "httpx>=0.27.0",
     "pyyaml>=6.0.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

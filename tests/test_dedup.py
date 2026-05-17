@@ -1,69 +1,70 @@
-#!/usr/bin/env python3
 """Tests for dedup_stories() in merge_chunks.py."""
-import os
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
 from merge_chunks import dedup_stories
 
-# Stories must be in classified format (post-LLM): title, category, importance, sources, urls.
-stories = [
-    # Two stories about the same drone attack — enough word overlap to merge (>30%)
-    {
-        'title': 'Россия атаковала Украину массированным ударом дронов',
-        'category': 'политика', 'importance': 8,
-        'sources': ['src1'], 'urls': ['http://a.com'],
-    },
-    {
-        'title': 'Россия атаковала Украину массированным ударом ракет и дронов',
-        'category': 'политика', 'importance': 7,
-        'sources': ['src2'], 'urls': ['http://b.com'],
-    },
-    # Two Duma stories — shorter title is substring of longer (containment merge)
-    {
-        'title': 'Госдума разрешила Путину привлекать военных',
-        'category': 'политика', 'importance': 6,
-        'sources': ['src3'], 'urls': ['http://c.com'],
-    },
-    {
-        'title': 'Госдума разрешила Путину привлекать военных для защиты россиян',
-        'category': 'политика', 'importance': 6,
-        'sources': ['src4'], 'urls': ['http://d.com'],
-    },
-    # Standalone — no overlap with others
-    {
-        'title': 'Запуск новой ракеты-носителя с космодрома Восточный',
-        'category': 'наука', 'importance': 5,
-        'sources': ['src5'], 'urls': ['http://e.com'],
-    },
-]
 
-result = dedup_stories(stories)
+def _stories():
+    """Two pairs of mergeable stories plus one standalone."""
+    return [
+        {
+            "title": "Россия атаковала Украину массированным ударом дронов",
+            "category": "политика", "importance": 8,
+            "sources": ["src1"], "urls": ["http://a.com"],
+        },
+        {
+            "title": "Россия атаковала Украину массированным ударом ракет и дронов",
+            "category": "политика", "importance": 7,
+            "sources": ["src2"], "urls": ["http://b.com"],
+        },
+        {
+            "title": "Госдума разрешила Путину привлекать военных",
+            "category": "политика", "importance": 6,
+            "sources": ["src3"], "urls": ["http://c.com"],
+        },
+        {
+            "title": "Госдума разрешила Путину привлекать военных для защиты россиян",
+            "category": "политика", "importance": 6,
+            "sources": ["src4"], "urls": ["http://d.com"],
+        },
+        {
+            "title": "Запуск новой ракеты-носителя с космодрома Восточный",
+            "category": "наука", "importance": 5,
+            "sources": ["src5"], "urls": ["http://e.com"],
+        },
+    ]
 
-print(f'Input: {len(stories)}, Output: {len(result)} groups')
-for s in result:
-    print(f'  {s["sources"]} → {s["title"]}')
-print()
 
-assert len(result) == 3, f'Expected 3 groups, got {len(result)}'
+def test_dedup_collapses_five_inputs_to_three_groups():
+    assert len(dedup_stories(_stories())) == 3
 
-drone_group = [s for s in result if 'src1' in s['sources'] and 'src2' in s['sources']]
-duma_group  = [s for s in result if 'src3' in s['sources'] and 'src4' in s['sources']]
-standalone  = [s for s in result if 'src5' in s['sources']]
 
-assert len(drone_group) == 1, 'Expected 1 drone group'
-assert len(duma_group) == 1, 'Expected 1 duma group'
-assert len(standalone) == 1, 'Expected 1 standalone group'
+def test_canonical_title_is_the_longer_one():
+    result = dedup_stories(_stories())
+    drone = next(s for s in result if "src1" in s["sources"])
+    duma = next(s for s in result if "src3" in s["sources"])
+    assert drone["title"] == "Россия атаковала Украину массированным ударом ракет и дронов"
+    assert duma["title"] == "Госдума разрешила Путину привлекать военных для защиты россиян"
 
-# Canonical title is the longer one
-assert drone_group[0]['title'] == 'Россия атаковала Украину массированным ударом ракет и дронов'
-assert duma_group[0]['title'] == 'Госдума разрешила Путину привлекать военных для защиты россиян'
 
-# Importance is the max of the merged stories
-assert drone_group[0]['importance'] == 8
-assert duma_group[0]['importance'] == 6
+def test_importance_is_max_of_merged_stories():
+    result = dedup_stories(_stories())
+    drone = next(s for s in result if "src1" in s["sources"])
+    assert drone["importance"] == 8
 
-# Sources and urls are merged and deduplicated
-assert drone_group[0]['sources'] == ['src1', 'src2']
-assert drone_group[0]['urls'] == ['http://a.com', 'http://b.com']
 
-print('ALL ASSERTIONS PASSED')
+def test_sources_and_urls_are_merged_and_deduplicated():
+    result = dedup_stories(_stories())
+    drone = next(s for s in result if "src1" in s["sources"])
+    assert drone["sources"] == ["src1", "src2"]
+    assert drone["urls"] == ["http://a.com", "http://b.com"]
+
+
+def test_standalone_story_passes_through_unchanged():
+    result = dedup_stories(_stories())
+    standalone = next(s for s in result if "src5" in s["sources"])
+    assert standalone["title"] == "Запуск новой ракеты-носителя с космодрома Восточный"
+    assert standalone["category"] == "наука"
+
+
+def test_empty_input_returns_empty_list():
+    assert dedup_stories([]) == []

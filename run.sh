@@ -1,17 +1,11 @@
 #!/usr/bin/env bash
-# News digest AI pipeline runner
-# Flow: scrape → extract → split → classify (direct API) → merge → summarize (direct API) → assemble → format
-# All AI steps use direct ollama-cloud API calls (call_ollama.py / call_ollama_summarize.py).
-# No regex, no hardcoded rules, no kanban dependency.
+# News digest pipeline runner.
+# Flow: scrape → extract → split → classify → merge → assemble → format → cleanup
 #
-# Usage: ./run.sh
-# Output: compact Telegram-friendly digest on stdout
-#
-# Exit codes:
-#   0 — all steps passed
-#   1 — one or more steps failed
-#
-# Writes pipeline_status.json with per-step results for monitoring.
+# Usage:  ./run.sh
+# Output: compact Telegram-friendly digest on stdout; status messages on stderr.
+# Exit:   0 if every step passed, 1 otherwise.
+# Side effect: writes data/pipeline_status.json for monitoring.
 
 set -uo pipefail
 
@@ -106,9 +100,6 @@ write_status_file() {
 STATUSEOF
 }
 
-# ═══════════════════════════════════════════════════════
-# AI Pipeline (all steps use direct ollama-cloud API)
-# ═══════════════════════════════════════════════════════
 mkdir -p "$SCRIPT_DIR/data"
 echo "=== ${PIPELINE_START} — starting AI pipeline ===" >&2
 
@@ -127,34 +118,10 @@ run_step "split" \
     "Split articles into chunks (15 per chunk) for AI classification" \
     python3 "$SCRIPT_DIR/src/analyze_full.py" --phase split
 
-# Step 4: Classify each chunk via direct ollama-cloud API (deepseek-v4-flash)
-echo "" >&2
-echo "=== [classify] Classify chunks via ollama-cloud API (deepseek-v4-flash) ===" >&2
-CLASSIFY_START=$(date '+%Y-%m-%dT%H:%M:%S%z')
-CLASSIFY_EXIT=0
-mkdir -p "$SCRIPT_DIR/data"
-shopt -s nullglob
-CHUNKS=("$SCRIPT_DIR"/data/chunks/chunk_*.json)
-shopt -u nullglob
-if [ ${#CHUNKS[@]} -eq 0 ]; then
-    CLASSIFY_EXIT=1
-    echo "FAILED: no chunk files found — split step may have failed" >&2
-else
-    for chunk in "${CHUNKS[@]}"; do
-        chunk_num=$(basename "$chunk" .json | sed 's/chunk_//')
-        echo "  → chunk ${chunk_num}..." >&2
-        python3 "$SCRIPT_DIR/src/call_ollama.py" "$chunk_num" >&2 || { CLASSIFY_EXIT=1; echo "FAILED: chunk ${chunk_num} classification failed" >&2; }
-    done
-fi
-CLASSIFY_END=$(date '+%Y-%m-%dT%H:%M:%S%z')
-if [ "$CLASSIFY_EXIT" -eq 0 ]; then
-    echo "  ✓ classify: OK" >&2
-else
-    echo "  ✗ classify: FAILED" >&2
-    STEP_FAILED_NAMES+=("classify")
-    STEP_FAILED_MSGS+=("AI classification of chunks — one or more chunks failed")
-fi
-STEP_RESULTS+=("classify|${CLASSIFY_EXIT}|Classify chunks via ollama-cloud API (deepseek-v4-flash)|${CLASSIFY_START}|${CLASSIFY_END}")
+# Step 4: Classify all chunks in parallel via ollama-cloud API
+run_step "classify" \
+    "Classify chunks via ollama-cloud API (parallel)" \
+    python3 "$SCRIPT_DIR/src/call_ollama.py" --all
 
 # Step 5: Merge classified chunks + cross-chunk dedup
 run_step "merge" \

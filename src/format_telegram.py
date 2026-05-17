@@ -7,13 +7,14 @@ Format: emoji separators, titles only (no summaries).
 
 import json
 import os
-import sys
 
-from utils import CONFIG, DATA_DIR
+from utils import CONFIG, DATA_DIR, get_logger
 
 DIGEST_JSON    = os.path.join(DATA_DIR, "digest.json")
 TELEGRAM_LIMIT = CONFIG["telegram"]["message_limit"]
 CAT_LABEL      = CONFIG["categories"]["labels"]
+
+log = get_logger("format_telegram")
 
 
 def load_digest(path: str) -> dict:
@@ -93,7 +94,7 @@ def format_digest(digest_data: dict) -> str:
 
 def main() -> None:
     if not os.path.exists(DIGEST_JSON):
-        print("ERROR: digest.json not found", file=sys.stderr)
+        log.error("digest.json not found at %s", DIGEST_JSON)
         raise SystemExit(1)
 
     data = load_digest(DIGEST_JSON)
@@ -101,8 +102,7 @@ def main() -> None:
     parts = split_message(output)
 
     if len(parts) > 1:
-        print(f"[digest split into {len(parts)} parts — Telegram limit {TELEGRAM_LIMIT} chars]",
-              file=sys.stderr)
+        log.info("digest split into %d parts — Telegram limit %d chars", len(parts), TELEGRAM_LIMIT)
 
     for i, part in enumerate(parts, 1):
         if len(parts) > 1:

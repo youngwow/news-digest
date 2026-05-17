@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 """
-AI-driven digest assembler — no regex, no hardcoded rules.
-All classification, dedup, and summarization is done by LLM subagents
-via delegate_task. This script only handles data I/O and final assembly.
-
-Phase 1: Load raw_news.json → write articles.json (flat list for subagent)
-Phase 2: (subagent) Classify + deduplicate → writes classified.json
-Phase 3: (subagent) Summarize each story → writes summarized.json
-Phase 4: Assemble digest.json + digest.md from AI outputs
+AI-driven digest assembler — extract, split, validate, and assemble phases.
+Reads raw_news.json / classified.json and writes articles.json, chunks/, and digest.{json,md}.
 """
 
 import os
@@ -15,12 +9,13 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-from utils import CONFIG, DATA_DIR, load_json, save_json
+from utils import CONFIG, DATA_DIR, get_logger, load_json, save_json
+
+log = get_logger("analyze_full")
 
 RAW_NEWS        = os.path.join(DATA_DIR, "raw_news.json")
 ARTICLES_JSON   = os.path.join(DATA_DIR, "articles.json")
 CLASSIFIED_JSON = os.path.join(DATA_DIR, "classified.json")
-SUMMARIZED_JSON = os.path.join(DATA_DIR, "summarized.json")
 DIGEST_JSON     = os.path.join(DATA_DIR, "digest.json")
 DIGEST_MD       = os.path.join(DATA_DIR, "digest.md")
 CHUNKS_DIR      = os.path.join(DATA_DIR, "chunks")
@@ -50,7 +45,7 @@ def extract_flat_articles():
         "total": len(flat),
         "articles": flat,
     })
-    print(f"Extracted {len(flat)} articles → {ARTICLES_JSON}")
+    log.info("Extracted %d articles → %s", len(flat), ARTICLES_JSON)
     return flat
 
 
@@ -71,9 +66,9 @@ def split_into_chunks():
             "articles": chunk,
         })
         chunk_files.append(path)
-        print(f"Chunk {idx}/{len(chunks)}: {len(chunk)} articles → {path}")
+        log.info("Chunk %d/%d: %d articles → %s", idx, len(chunks), len(chunk), path)
 
-    print(f"Split {total} articles into {len(chunks)} chunks")
+    log.info("Split %d articles into %d chunks", total, len(chunks))
     return chunk_files
 
 
@@ -84,7 +79,7 @@ def cleanup_chunks():
         return
     import shutil
     shutil.rmtree(CHUNKS_DIR)
-    print(f"Cleaned up {CHUNKS_DIR}")
+    log.info("Cleaned up %s", CHUNKS_DIR)
 
 
 def validate_classified(path=CLASSIFIED_JSON):
@@ -95,20 +90,7 @@ def validate_classified(path=CLASSIFIED_JSON):
         assert s.get("title"), "story missing title"
         assert s.get("category") in CATEGORY_EMOJI, f"invalid category: {s.get('category')}"
         assert isinstance(s.get("importance"), int), "importance must be int"
-    print(f"Validated: {len(stories)} stories in {path}")
-    return data
-
-
-def validate_summarized(path=SUMMARIZED_JSON):
-    """Check that summarized.json has required structure."""
-    data = load_json(path)
-    stories = data.get("stories", [])
-    for s in stories:
-        assert s.get("title"), "story missing title"
-        assert s.get("category"), "story missing category"
-        assert s.get("short_summary"), "story missing short_summary"
-        assert isinstance(s.get("importance"), int), "importance must be int"
-    print(f"Validated: {len(stories)} stories in {path}")
+    log.info("Validated: %d stories in %s", len(stories), path)
     return data
 
 
@@ -118,7 +100,7 @@ def assemble_digest():
     stories = data.get("stories", [])
 
     if not stories:
-        print("ERROR: no stories to assemble")
+        log.error("no stories to assemble")
         sys.exit(1)
 
     # Sort by importance desc
@@ -181,7 +163,7 @@ def assemble_digest():
     }
 
     save_json(DIGEST_JSON, full)
-    print(f"Saved {DIGEST_JSON}")
+    log.info("Saved %s", DIGEST_JSON)
 
     # Markdown — titles only, no summaries
     lines = [
@@ -222,13 +204,10 @@ def assemble_digest():
     md = "\n".join(lines)
     with open(DIGEST_MD, "w", encoding="utf-8") as f:
         f.write(md)
-    print(f"Saved {DIGEST_MD} ({len(md)} chars)")
+    log.info("Saved %s (%d chars)", DIGEST_MD, len(md))
 
-    # Stats
     cat_counts = Counter(s.get("category", "прочее") for s in stories)
-    print("\nCategory distribution:")
-    for cat, cnt in cat_counts.most_common():
-        print(f"  {cat}: {cnt}")
+    log.info("Category distribution: %s", ", ".join(f"{c}={n}" for c, n in cat_counts.most_common()))
 
     return full
 
@@ -236,7 +215,7 @@ def assemble_digest():
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="AI-driven digest assembler")
-    parser.add_argument("--phase", choices=["extract", "split", "cleanup", "validate-classified", "validate-summarized", "assemble"],
+    parser.add_argument("--phase", choices=["extract", "split", "cleanup", "validate-classified", "assemble"],
                         default="assemble")
     args = parser.parse_args()
 
@@ -248,12 +227,8 @@ def main():
         cleanup_chunks()
     elif args.phase == "validate-classified":
         validate_classified()
-    elif args.phase == "validate-summarized":
-        validate_summarized()
     elif args.phase == "assemble":
         assemble_digest()
-    else:
-        pass
 
 
 if __name__ == "__main__":
