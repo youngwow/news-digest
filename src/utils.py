@@ -18,10 +18,8 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 # Required keys: section -> {key: expected_type}. Used by _validate_config.
 _REQUIRED_SCHEMA: dict[str, dict[str, type | tuple[type, ...]]] = {
     "llm": {
-        "base_url": str, "model": str, "temperature": (int, float),
-        "max_tokens": int, "timeout": (int, float),
-        "max_retries": int, "classify_concurrency": int,
-        "cache_retention_days": int,
+        "active": str, "providers": list,
+        "classify_concurrency": int, "cache_retention_days": int,
     },
     "scraper": {
         "date_window_hours": (int, float), "request_timeout": (int, float),
@@ -73,6 +71,44 @@ def _validate_config(cfg: dict) -> None:
         if cat not in cfg["categories"]["labels"]:
             raise SystemExit(f"config.yaml: categories.labels missing entry for '{cat}'")
 
+    _validate_llm_providers(cfg["llm"])
+
+
+_PROVIDER_REQUIRED: dict[str, type | tuple[type, ...]] = {
+    "name": str, "base_url": str, "model": str,
+    "temperature": (int, float), "max_tokens": int,
+    "timeout": (int, float), "max_retries": int,
+}
+
+
+def _validate_llm_providers(llm: dict) -> None:
+    providers = llm["providers"]
+    if not providers:
+        raise SystemExit("config.yaml: llm.providers must contain at least one entry")
+    names: list[str] = []
+    for i, p in enumerate(providers):
+        if not isinstance(p, dict):
+            raise SystemExit(f"config.yaml: llm.providers[{i}] must be a mapping")
+        for key, expected in _PROVIDER_REQUIRED.items():
+            if key not in p:
+                raise SystemExit(f"config.yaml: llm.providers[{i}] missing key '{key}'")
+            if not isinstance(p[key], expected):
+                raise SystemExit(
+                    f"config.yaml: llm.providers[{i}].{key} must be {expected}, "
+                    f"got {type(p[key]).__name__}"
+                )
+        if "api_key_env" in p and p["api_key_env"] is not None and not isinstance(p["api_key_env"], str):
+            raise SystemExit(
+                f"config.yaml: llm.providers[{i}].api_key_env must be string or null"
+            )
+        names.append(p["name"])
+
+    if llm["active"] not in names:
+        raise SystemExit(
+            f"config.yaml: llm.active '{llm['active']}' does not match any provider name "
+            f"(available: {names})"
+        )
+
 
 def _load_config() -> dict:
     path = os.path.join(PROJECT_ROOT, "config.yaml")
@@ -104,21 +140,27 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-def load_api_key() -> str:
-    """Return OLLAMA_API_KEY from environment or local .env file."""
-    key = os.environ.get("OLLAMA_API_KEY", "")
-    if key:
-        return key
+def load_env_secret(var_name: str) -> str:
+    """Return `var_name` from process environment or PROJECT_ROOT/.env (first match)."""
+    val = os.environ.get(var_name, "")
+    if val:
+        return val
     env_path = os.path.join(PROJECT_ROOT, ".env")
     if os.path.exists(env_path):
+        prefix = f"{var_name}="
         with open(env_path) as f:
             for line in f:
                 line = line.strip()
-                if line.startswith("OLLAMA_API_KEY="):
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if val:
-                        return val
+                if line.startswith(prefix):
+                    raw = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if raw:
+                        return raw
     return ""
+
+
+def load_api_key() -> str:
+    """Backwards-compat wrapper: return OLLAMA_API_KEY from env or .env."""
+    return load_env_secret("OLLAMA_API_KEY")
 
 
 def extract_json(text: str) -> str:

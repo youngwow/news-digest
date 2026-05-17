@@ -18,7 +18,7 @@ REPORT=$(python3 "$HEALTH_CHECK" --json 2>/dev/null) || true
 
 if [ -z "$REPORT" ]; then
     # Health check itself failed — that's a meta-problem
-    echo "⚠️ Мониторинг дайджеста — сбой"
+    echo "ALERT: ⚠️ Мониторинг дайджеста — сбой"
     echo ""
     echo "health_check.py не смог выполниться. Возможные причины:"
     echo "— Python или зависимости не установлены"
@@ -32,11 +32,12 @@ if echo "$REPORT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exi
     exit 0
 fi
 
-# Something is wrong — emit alert
-echo "⚠️ Дайджест новостей — проблемы"
+# Something is wrong — emit alert.
+# Every line is prefixed with "ALERT:" so it survives cron MAILTO filtering and
+# `grep ALERT data/alerts.log` queries.
+echo "ALERT: ⚠️ Дайджест новостей — проблемы"
 echo ""
 
-# Parse and format issues
 python3 - "$REPORT" << 'PYEOF'
 import json, sys
 
@@ -50,6 +51,7 @@ for name, check in report["checks"].items():
         "digest_md": "Digest Markdown",
         "pipeline_log": "Лог пайплайна",
         "pipeline_status": "Шаги пайплайна",
+        "source_metrics": "Здоровье источников",
     }.get(name, name)
 
     status = check["status"]
@@ -57,11 +59,11 @@ for name, check in report["checks"].items():
         continue
 
     icon = "❌" if status == "critical" else "⚠️"
-    print(f"{icon} {desc}: {status}")
+    print(f"ALERT: {icon} {desc}: {status}")
 
     for severity, msg in check.get("issues", []):
         tag = "КРИТ" if severity == "critical" else "ПРЕД"
-        print(f"  [{tag}] {msg}")
+        print(f"ALERT:   [{tag}] {msg}")
     print("")
 PYEOF
 

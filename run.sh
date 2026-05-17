@@ -12,8 +12,20 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Atomic lock: prevent overlapping runs (e.g. cron firing while a manual run is in flight).
+# `mkdir` is atomic on all POSIX systems; exit 0 on a lock conflict so cron doesn't treat
+# the no-op as a failure. Stale lock can be cleared with `make unlock`.
+mkdir -p "$SCRIPT_DIR/data"
+LOCK_DIR="$SCRIPT_DIR/data/.run.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "Another pipeline run holds the lock at $LOCK_DIR — exiting (no-op)" >&2
+    exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
 PIPELINE_START=$(date '+%Y-%m-%d %H:%M:%S MSK')
 STATUS_FILE="$SCRIPT_DIR/data/pipeline_status.json"
+ALERTS_LOG="$SCRIPT_DIR/data/alerts.log"
 
 # ── helper: run a step and record its result ──
 declare -a STEP_RESULTS=()
@@ -169,6 +181,14 @@ if [ ${#STEP_FAILED_NAMES[@]} -gt 0 ]; then
         echo "    FAILED: ${msg}" >&2
     done
     echo "Status file: ${STATUS_FILE}" >&2
+
+    # Append one greppable line per failed run for audit / cron-mail surfacing.
+    {
+        printf '%s FAIL ' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        IFS=, ; printf '%s' "${STEP_FAILED_NAMES[*]}"
+        printf ' — %d step(s) failed\n' "${#STEP_FAILED_NAMES[@]}"
+    } >> "$ALERTS_LOG"
+
     exit 1
 fi
 

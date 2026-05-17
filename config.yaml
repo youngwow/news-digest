@@ -1,14 +1,26 @@
 # news-digest pipeline configuration
 
 llm:
-  base_url: "https://ollama.com/v1"
-  model: "gemma4:31b"
-  temperature: 0.3
-  max_tokens: 16384
-  timeout: 180                # seconds per API request
-  max_retries: 3              # attempts before giving up on a chunk
-  classify_concurrency: 4     # parallel chunk classification workers
-  cache_retention_days: 7     # prune chunk_cache/ entries older than this
+  active: local                 # name from `providers` below; flip to switch backends
+  classify_concurrency: 4       # parallel chunk classification workers (any provider)
+  cache_retention_days: 7       # prune data/chunk_cache/ entries older than this
+  providers:
+    - name: cloud
+      base_url: "https://ollama.com/v1"
+      model: "gemma4:31b"
+      api_key_env: "OLLAMA_API_KEY"   # null/missing → no Authorization header sent
+      temperature: 0.3
+      max_tokens: 16384
+      timeout: 180
+      max_retries: 3
+    - name: local
+      base_url: "http://localhost:11434/v1"
+      model: "gemma4:e4b"             # whichever model `ollama pull`ed locally
+      api_key_env: null
+      temperature: 0.3
+      max_tokens: 16384
+      timeout: 300
+      max_retries: 2
 
 scraper:
   date_window_hours: 8

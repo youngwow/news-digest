@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Direct ollama-cloud API call via httpx.
+LLM classification via the active provider in config.yaml.
 Reads chunk_N.json → classifies via LLM → writes chunk_N_classified.json.
 
 Usage:
@@ -21,17 +21,32 @@ from threading import Lock
 
 import httpx
 
-from utils import CONFIG, DATA_DIR, extract_json, get_logger, load_api_key
+from utils import CONFIG, DATA_DIR, extract_json, get_logger, load_env_secret
 
 CHUNKS_DIR = os.path.join(DATA_DIR, "chunks")
 CACHE_DIR  = os.path.join(DATA_DIR, "chunk_cache")
 _llm = CONFIG["llm"]
-BASE_URL              = _llm["base_url"]
-MODEL                 = _llm["model"]
-MAX_RETRIES           = _llm["max_retries"]
-TIMEOUT               = _llm["timeout"]
 CLASSIFY_CONCURRENCY  = _llm["classify_concurrency"]
 CACHE_RETENTION_DAYS  = _llm["cache_retention_days"]
+
+
+def _resolve_active_provider() -> dict:
+    name = _llm["active"]
+    for p in _llm["providers"]:
+        if p["name"] == name:
+            return p
+    raise SystemExit(f"config.yaml: llm.active '{name}' not in providers")
+
+
+ACTIVE = _resolve_active_provider()
+PROVIDER_NAME = ACTIVE["name"]
+BASE_URL      = ACTIVE["base_url"]
+MODEL         = ACTIVE["model"]
+MAX_RETRIES   = ACTIVE["max_retries"]
+TIMEOUT       = ACTIVE["timeout"]
+TEMPERATURE   = ACTIVE["temperature"]
+MAX_TOKENS    = ACTIVE["max_tokens"]
+API_KEY_ENV   = ACTIVE.get("api_key_env")
 
 log = get_logger("call_ollama")
 
@@ -85,10 +100,13 @@ def classify_chunk(chunk_num: int) -> bool:
     with _cache_stats_lock:
         _cache_stats["misses"] += 1
 
-    api_key = load_api_key()
-    if not api_key:
-        log.error("chunk_%d: OLLAMA_API_KEY not found", chunk_num)
-        return False
+    headers = {"Content-Type": "application/json"}
+    if API_KEY_ENV:
+        api_key = load_env_secret(API_KEY_ENV)
+        if not api_key:
+            log.error("chunk_%d: secret '%s' not set in env or .env", chunk_num, API_KEY_ENV)
+            return False
+        headers["Authorization"] = f"Bearer {api_key}"
 
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
 
@@ -112,15 +130,12 @@ Return ONLY valid JSON:
             with httpx.Client(timeout=TIMEOUT) as client:
                 resp = client.post(
                     f"{BASE_URL}/chat/completions",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {api_key}",
-                    },
+                    headers=headers,
                     json={
                         "model": MODEL,
                         "messages": [{"role": "user", "content": prompt}],
-                        "temperature": _llm["temperature"],
-                        "max_tokens": _llm["max_tokens"],
+                        "temperature": TEMPERATURE,
+                        "max_tokens": MAX_TOKENS,
                     },
                 )
             if resp.status_code == 200:
@@ -181,6 +196,7 @@ def classify_all() -> bool:
 
     chunk_nums = sorted(int(os.path.basename(f).removeprefix("chunk_").removesuffix(".json"))
                         for f in files)
+    log.info("classify: active provider = %s (%s, model=%s)", PROVIDER_NAME, BASE_URL, MODEL)
     log.info("classifying %d chunks with %d workers", len(chunk_nums), CLASSIFY_CONCURRENCY)
 
     failures: list[int] = []

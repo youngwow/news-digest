@@ -86,9 +86,17 @@ def _good_config() -> dict:
     """Minimal valid config covering all required keys."""
     return {
         "llm": {
-            "base_url": "https://x", "model": "m", "temperature": 0.3,
-            "max_tokens": 1024, "timeout": 30, "max_retries": 3,
-            "classify_concurrency": 4, "cache_retention_days": 7,
+            "active": "cloud",
+            "classify_concurrency": 4,
+            "cache_retention_days": 7,
+            "providers": [
+                {
+                    "name": "cloud", "base_url": "https://x", "model": "m",
+                    "temperature": 0.3, "max_tokens": 1024,
+                    "timeout": 30, "max_retries": 3,
+                    "api_key_env": "OLLAMA_API_KEY",
+                },
+            ],
         },
         "scraper": {
             "date_window_hours": 8, "request_timeout": 20,
@@ -131,15 +139,15 @@ def test_validate_config_rejects_missing_section():
 
 def test_validate_config_rejects_missing_nested_key():
     cfg = _good_config()
-    del cfg["llm"]["base_url"]
-    with pytest.raises(SystemExit, match="llm.base_url"):
+    del cfg["llm"]["classify_concurrency"]
+    with pytest.raises(SystemExit, match="llm.classify_concurrency"):
         _validate_config(cfg)
 
 
 def test_validate_config_rejects_wrong_type():
     cfg = _good_config()
-    cfg["llm"]["max_retries"] = "three"
-    with pytest.raises(SystemExit, match="llm.max_retries"):
+    cfg["llm"]["classify_concurrency"] = "four"
+    with pytest.raises(SystemExit, match="llm.classify_concurrency"):
         _validate_config(cfg)
 
 
