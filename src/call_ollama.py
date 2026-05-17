@@ -4,51 +4,30 @@ Direct ollama-cloud API call via httpx.
 Reads chunk_N.json → sends to deepseek-v4-flash → writes chunk_N_classified.json
 """
 
-import json, os, sys, re
+import json
+import os
+import sys
+import time
+
 import httpx
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CHUNKS_DIR = os.path.join(HERE, "chunks")
-BASE_URL = "https://ollama.com/v1"
-MODEL = "deepseek-v4-flash"
+from utils import CONFIG, DATA_DIR, extract_json, load_api_key
 
-def load_api_key():
-    """Load OLLAMA_API_KEY from .env or environment."""
-    key = os.environ.get("OLLAMA_API_KEY", "")
-    if key:
-        return key
-    env_path = os.path.join(HERE, ".env")
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("OLLAMA_API_KEY="):
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if val:
-                        return val
-    return ""
+CHUNKS_DIR = os.path.join(DATA_DIR, "chunks")
+_llm = CONFIG["llm"]
+BASE_URL    = _llm["base_url"]
+MODEL       = _llm["model"]
+MAX_RETRIES = _llm["max_retries"]
+TIMEOUT     = _llm["timeout"]
 
-def extract_json(text):
-    """Extract JSON from LLM response (may have markdown wrapping)."""
-    text = text.strip()
-    # Strip markdown code fences
-    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
-    # Find first { to last }
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        text = text[start:end + 1]
-    return text
 
-def classify_chunk(chunk_num):
+def classify_chunk(chunk_num: int) -> bool:
     chunk_path = os.path.join(CHUNKS_DIR, f"chunk_{chunk_num}.json")
     out_path = os.path.join(CHUNKS_DIR, f"chunk_{chunk_num}_classified.json")
 
     api_key = load_api_key()
     if not api_key:
-        print(f"ERROR: OLLAMA_API_KEY not found")
+        print("ERROR: OLLAMA_API_KEY not found")
         return False
 
     with open(chunk_path, encoding="utf-8") as f:
@@ -70,23 +49,35 @@ Return ONLY valid JSON:
 
     print(f"Sending {len(articles)} articles to {MODEL}... ({len(prompt)} chars)")
 
-    with httpx.Client(timeout=180) as client:
-        resp = client.post(
-            f"{BASE_URL}/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            json={
-                "model": MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens": 16384,
-            },
-        )
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            with httpx.Client(timeout=TIMEOUT) as client:
+                resp = client.post(
+                    f"{BASE_URL}/chat/completions",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}",
+                    },
+                    json={
+                        "model": MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": _llm["temperature"],
+                        "max_tokens": _llm["max_tokens"],
+                    },
+                )
+            if resp.status_code == 200:
+                break
+            print(f"Attempt {attempt}/{MAX_RETRIES}: HTTP {resp.status_code}: {resp.text[:200]}")
+        except httpx.RequestError as e:
+            print(f"Attempt {attempt}/{MAX_RETRIES}: request error: {e}")
+            resp = None
+        if attempt < MAX_RETRIES:
+            time.sleep(2 ** attempt)
+    else:
+        print("All retries exhausted")
+        return False
 
-    if resp.status_code != 200:
-        print(f"HTTP {resp.status_code}: {resp.text[:300]}")
+    if resp is None or resp.status_code != 200:
         return False
 
     result = resp.json()
@@ -108,6 +99,7 @@ Return ONLY valid JSON:
 
     print(f"  ✓ {len(stories)} stories → {out_path}")
     return True
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

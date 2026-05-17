@@ -16,16 +16,18 @@ import feedparser
 import httpx
 import re
 
-# ── config ──────────────────────────────────────────────────────────
-SOURCES_FILE = os.path.join(os.path.dirname(__file__), "sources.json")
-OUTPUT_FILE  = os.path.join(os.path.dirname(__file__), "raw_news.json")
+from utils import CONFIG, DATA_DIR
 
-REQUEST_TIMEOUT = 20          # seconds per HTTP request
-MAX_REDIRECTS   = 5           # follow up to 5 redirects
-DATE_WINDOW_HOURS = 24        # keep only articles published within this window
-USER_AGENT      = (
-    "Mozilla/5.0 (compatible; NewsDigestBot/1.0; +https://github.com/hermes)"
-)
+# ── config ──────────────────────────────────────────────────────────
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOURCES_FILE = os.path.join(_ROOT, "sources.json")
+OUTPUT_FILE  = os.path.join(DATA_DIR, "raw_news.json")
+
+_scraper          = CONFIG["scraper"]
+REQUEST_TIMEOUT   = _scraper["request_timeout"]
+MAX_REDIRECTS     = _scraper["max_redirects"]
+DATE_WINDOW_HOURS = _scraper["date_window_hours"]
+USER_AGENT        = _scraper["user_agent"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -223,10 +225,14 @@ def main() -> None:
              len(articles), success_count, fail_count)
 
     # Date filter — keep only articles published within DATE_WINDOW_HOURS
+    no_date = sum(1 for a in articles if a.get("published") is None)
     before_date_filter = len(articles)
     articles = [a for a in articles if is_within_window(a.get("published"))]
-    log.info("After date filter (24h window): %d articles (dropped %d)",
-             len(articles), before_date_filter - len(articles))
+    outside_window = before_date_filter - len(articles) - no_date
+    log.info(
+        f"After date filter ({DATE_WINDOW_HOURS}h window): %d articles (dropped %d: %d had no date, %d outside window)",
+        len(articles), before_date_filter - len(articles), no_date, outside_window,
+    )
 
     # Deduplicate
     articles = deduplicate(articles)

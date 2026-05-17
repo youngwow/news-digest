@@ -7,26 +7,37 @@ Format: emoji separators, titles only (no summaries).
 
 import json
 import os
+import sys
 
+from utils import CONFIG, DATA_DIR
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-DIGEST_JSON = os.path.join(HERE, "digest.json")
-
-CAT_LABEL = {
-    "политика": "🏛️ Политика",
-    "экономика": "💰 Экономика",
-    "технологии": "🤖 Технологии",
-    "мир": "🌍 Мир",
-    "спорт": "⚽ Спорт",
-    "наука": "🔬 Наука",
-    "культура": "🎭 Культура",
-    "прочее": "📌 Прочее",
-}
+DIGEST_JSON    = os.path.join(DATA_DIR, "digest.json")
+TELEGRAM_LIMIT = CONFIG["telegram"]["message_limit"]
+CAT_LABEL      = CONFIG["categories"]["labels"]
 
 
 def load_digest(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
+    """Split text into parts that fit within Telegram's character limit, breaking on line boundaries."""
+    parts: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in text.split("\n"):
+        line_len = len(line) + 1  # +1 for the newline join will add
+        if current and current_len + line_len > limit:
+            parts.append("\n".join(current))
+            current = [line]
+            current_len = line_len
+        else:
+            current.append(line)
+            current_len += line_len
+    if current:
+        parts.append("\n".join(current))
+    return parts
 
 
 def format_digest(digest_data: dict) -> str:
@@ -80,14 +91,23 @@ def format_digest(digest_data: dict) -> str:
     return "\n".join(lines)
 
 
-def main():
+def main() -> None:
     if not os.path.exists(DIGEST_JSON):
-        print("ERROR: digest.json not found", file=__import__("sys").stderr)
+        print("ERROR: digest.json not found", file=sys.stderr)
         raise SystemExit(1)
 
     data = load_digest(DIGEST_JSON)
     output = format_digest(data)
-    print(output)
+    parts = split_message(output)
+
+    if len(parts) > 1:
+        print(f"[digest split into {len(parts)} parts — Telegram limit {TELEGRAM_LIMIT} chars]",
+              file=sys.stderr)
+
+    for i, part in enumerate(parts, 1):
+        if len(parts) > 1:
+            print(f"\n[{i}/{len(parts)}]")
+        print(part)
 
 
 if __name__ == "__main__":

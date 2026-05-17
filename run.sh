@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 PIPELINE_START=$(date '+%Y-%m-%d %H:%M:%S MSK')
-STATUS_FILE="$SCRIPT_DIR/pipeline_status.json"
+STATUS_FILE="$SCRIPT_DIR/data/pipeline_status.json"
 
 # ── helper: run a step and record its result ──
 declare -a STEP_RESULTS=()
@@ -84,7 +84,7 @@ write_status_file() {
 
     printf -v failures_json '[%s]' "$(
         local ffirst=true
-        for fname in "${STEP_FAILED_NAMES[@]}"; do
+        for fname in "${STEP_FAILED_NAMES[@]+"${STEP_FAILED_NAMES[@]}"}"; do
             if $ffirst; then ffirst=false; printf '"%s"' "$fname"
             else printf ',"%s"' "$fname"; fi
         done
@@ -109,33 +109,43 @@ STATUSEOF
 # ═══════════════════════════════════════════════════════
 # AI Pipeline (all steps use direct ollama-cloud API)
 # ═══════════════════════════════════════════════════════
+mkdir -p "$SCRIPT_DIR/data"
 echo "=== ${PIPELINE_START} — starting AI pipeline ===" >&2
 
 # Step 1: Scrape RSS/Atom feeds
 run_step "scrape" \
     "Scrape RSS/Atom feeds → raw_news.json" \
-    python3 "$SCRIPT_DIR/scraper.py"
+    python3 "$SCRIPT_DIR/src/scraper.py"
 
 # Step 2: Extract flat article list
 run_step "extract" \
     "Extract flat article list → articles.json" \
-    python3 "$SCRIPT_DIR/analyze_full.py" --phase extract
+    python3 "$SCRIPT_DIR/src/analyze_full.py" --phase extract
 
 # Step 3: Split into chunks (15 articles each)
 run_step "split" \
     "Split articles into chunks (15 per chunk) for AI classification" \
-    python3 "$SCRIPT_DIR/analyze_full.py" --phase split
+    python3 "$SCRIPT_DIR/src/analyze_full.py" --phase split
 
 # Step 4: Classify each chunk via direct ollama-cloud API (deepseek-v4-flash)
 echo "" >&2
 echo "=== [classify] Classify chunks via ollama-cloud API (deepseek-v4-flash) ===" >&2
 CLASSIFY_START=$(date '+%Y-%m-%dT%H:%M:%S%z')
 CLASSIFY_EXIT=0
-for chunk in "$SCRIPT_DIR"/chunks/chunk_*.json; do
-    chunk_num=$(basename "$chunk" .json | sed 's/chunk_//')
-    echo "  → chunk ${chunk_num}..." >&2
-    python3 "$SCRIPT_DIR/call_ollama.py" "$chunk_num" >&2 || { CLASSIFY_EXIT=1; echo "FAILED: chunk ${chunk_num} classification failed" >&2; }
-done
+mkdir -p "$SCRIPT_DIR/data"
+shopt -s nullglob
+CHUNKS=("$SCRIPT_DIR"/data/chunks/chunk_*.json)
+shopt -u nullglob
+if [ ${#CHUNKS[@]} -eq 0 ]; then
+    CLASSIFY_EXIT=1
+    echo "FAILED: no chunk files found — split step may have failed" >&2
+else
+    for chunk in "${CHUNKS[@]}"; do
+        chunk_num=$(basename "$chunk" .json | sed 's/chunk_//')
+        echo "  → chunk ${chunk_num}..." >&2
+        python3 "$SCRIPT_DIR/src/call_ollama.py" "$chunk_num" >&2 || { CLASSIFY_EXIT=1; echo "FAILED: chunk ${chunk_num} classification failed" >&2; }
+    done
+fi
 CLASSIFY_END=$(date '+%Y-%m-%dT%H:%M:%S%z')
 if [ "$CLASSIFY_EXIT" -eq 0 ]; then
     echo "  ✓ classify: OK" >&2
@@ -149,18 +159,18 @@ STEP_RESULTS+=("classify|${CLASSIFY_EXIT}|Classify chunks via ollama-cloud API (
 # Step 5: Merge classified chunks + cross-chunk dedup
 run_step "merge" \
     "Merge classified chunks + cross-chunk dedup → classified.json" \
-    python3 "$SCRIPT_DIR/merge_chunks.py"
+    python3 "$SCRIPT_DIR/src/merge_chunks.py"
 
 # Step 6: Assemble digest.json + digest.md (titles only, no summaries)
 run_step "assemble" \
     "Assemble final digest.json + digest.md from classified stories (titles only)" \
-    python3 "$SCRIPT_DIR/analyze_full.py" --phase assemble
+    python3 "$SCRIPT_DIR/src/analyze_full.py" --phase assemble
 
 # Step 7: Format for Telegram — stdout
 echo "=== [format] Format for Telegram → stdout ===" >&2
 FORMAT_START=$(date '+%Y-%m-%dT%H:%M:%S%z')
 FORMAT_EXIT=0
-python3 "$SCRIPT_DIR/format_telegram.py"
+python3 "$SCRIPT_DIR/src/format_telegram.py"
 FORMAT_EXIT=$?
 FORMAT_END=$(date '+%Y-%m-%dT%H:%M:%S%z')
 
@@ -177,7 +187,7 @@ STEP_RESULTS+=("format|${FORMAT_EXIT}|Format Telegram output → stdout|${FORMAT
 # Step 8: Cleanup temporary chunk files
 run_step "cleanup" \
     "Remove temporary chunk files from chunks/" \
-    python3 "$SCRIPT_DIR/analyze_full.py" --phase cleanup
+    python3 "$SCRIPT_DIR/src/analyze_full.py" --phase cleanup
 
 # ── finalize ──
 PIPELINE_END=$(date '+%Y-%m-%d %H:%M:%S MSK')

@@ -1,0 +1,61 @@
+# news-digest pipeline configuration
+
+llm:
+  base_url: "https://ollama.com/v1"
+  model: "gemma4:31b"
+  temperature: 0.3
+  max_tokens: 16384
+  timeout: 180         # seconds per API request
+  max_retries: 3       # attempts before giving up on a chunk
+
+scraper:
+  date_window_hours: 8
+  request_timeout: 20  # seconds per HTTP request
+  max_redirects: 5
+  user_agent: "Mozilla/5.0 (compatible; NewsDigestBot/1.0; +https://github.com/hermes)"
+
+pipeline:
+  chunk_size: 15             # articles per classification chunk
+  summarize_chunk_size: 12   # stories per summarization chunk
+
+telegram:
+  message_limit: 4096
+
+health:
+  min_sources_ok: 3
+  expected_sources: 10
+  default_max_age_minutes: 360  # 6 hours
+
+dedup:
+  overlap_threshold: 0.30   # merge if shared-word ratio exceeds this
+  shared_words_min: 3       # merge if at least this many significant words match
+  containment_min_len: 15   # min title length to trigger substring containment check
+
+categories:
+  order:
+    - политика
+    - мир
+    - экономика
+    - технологии
+    - спорт
+    - наука
+    - культура
+    - прочее
+  emoji:
+    политика:  "🏛️"
+    экономика: "💰"
+    технологии: "🤖"
+    мир:       "🌍"
+    спорт:     "⚽"
+    наука:     "🔬"
+    культура:  "🎭"
+    прочее:    "📌"
+  labels:
+    политика:  "🏛️ Политика"
+    экономика: "💰 Экономика"
+    технологии: "🤖 Технологии"
+    мир:       "🌍 Мир"
+    спорт:     "⚽ Спорт"
+    наука:     "🔬 Наука"
+    культура:  "🎭 Культура"
+    прочее:    "📌 Прочее"

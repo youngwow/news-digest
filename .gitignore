@@ -6,8 +6,8 @@ __pycache__/
 # C extensions
 *.so
 
-# Chunk files
-chunks/
+# Pipeline runtime data (generated on every run)
+data/
 
 # Distribution / packaging
 .Python

@@ -9,10 +9,12 @@
 
 set -euo pipefail
 
-HEALTH_CHECK="/root/hermes-work-dir/projects/news-digest/health_check.py"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HEALTH_CHECK="$SCRIPT_DIR/src/health_check.py"
+HEALTH_JSON="$SCRIPT_DIR/data/health.json"
 
 # Run the health check, capture JSON output
-REPORT=$("$HEALTH_CHECK" --json 2>/dev/null) || true
+REPORT=$(python3 "$HEALTH_CHECK" --json 2>/dev/null) || true
 
 if [ -z "$REPORT" ]; then
     # Health check itself failed — that's a meta-problem
@@ -35,7 +37,7 @@ echo "⚠️ Дайджест новостей — проблемы"
 echo ""
 
 # Parse and format issues
-python3 << 'PYEOF'
+python3 - "$REPORT" << 'PYEOF'
 import json, sys
 
 report = json.loads(sys.argv[1])
@@ -43,10 +45,11 @@ report = json.loads(sys.argv[1])
 for name, check in report["checks"].items():
     desc = {
         "raw_news": "Скрапинг RSS",
-        "analyzed_news": "Дедупликация и анализ",
+        "classified": "Классификация LLM",
         "digest_json": "Digest JSON",
         "digest_md": "Digest Markdown",
-        "pipeline_log": "Лог пайплайна"
+        "pipeline_log": "Лог пайплайна",
+        "pipeline_status": "Шаги пайплайна",
     }.get(name, name)
 
     status = check["status"]
@@ -60,8 +63,8 @@ for name, check in report["checks"].items():
         tag = "КРИТ" if severity == "critical" else "ПРЕД"
         print(f"  [{tag}] {msg}")
     print("")
-PYEOF "$REPORT"
+PYEOF
 
 echo "—"
-echo "Детали: /root/hermes-work-dir/projects/news-digest/health.json"
+echo "Детали: ${HEALTH_JSON}"
 exit 1

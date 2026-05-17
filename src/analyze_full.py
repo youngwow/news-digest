@@ -10,38 +10,26 @@ Phase 3: (subagent) Summarize each story → writes summarized.json
 Phase 4: Assemble digest.json + digest.md from AI outputs
 """
 
-import json
 import os
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-RAW_NEWS       = os.path.join(HERE, "raw_news.json")
-ARTICLES_JSON  = os.path.join(HERE, "articles.json")
-CLASSIFIED_JSON = os.path.join(HERE, "classified.json")
-SUMMARIZED_JSON = os.path.join(HERE, "summarized.json")
-DIGEST_JSON    = os.path.join(HERE, "digest.json")
-DIGEST_MD      = os.path.join(HERE, "digest.md")
-CHUNKS_DIR     = os.path.join(HERE, "chunks")
-CHUNK_SIZE     = 15  # max articles per chunk for subagent processing
+from utils import CONFIG, DATA_DIR, load_json, save_json
 
-CATEGORY_EMOJI = {
-    "политика": "🏛️", "экономика": "💰", "технологии": "🤖",
-    "мир": "🌍", "спорт": "⚽", "наука": "🔬", "культура": "🎭", "прочее": "📌",
-}
+RAW_NEWS        = os.path.join(DATA_DIR, "raw_news.json")
+ARTICLES_JSON   = os.path.join(DATA_DIR, "articles.json")
+CLASSIFIED_JSON = os.path.join(DATA_DIR, "classified.json")
+SUMMARIZED_JSON = os.path.join(DATA_DIR, "summarized.json")
+DIGEST_JSON     = os.path.join(DATA_DIR, "digest.json")
+DIGEST_MD       = os.path.join(DATA_DIR, "digest.md")
+CHUNKS_DIR      = os.path.join(DATA_DIR, "chunks")
 
-CAT_ORDER = ["политика", "мир", "экономика", "технологии", "спорт", "наука", "культура", "прочее"]
-
-
-def load_json(path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+_pipeline      = CONFIG["pipeline"]
+_cats          = CONFIG["categories"]
+CHUNK_SIZE     = _pipeline["chunk_size"]
+CATEGORY_EMOJI = _cats["emoji"]
+CAT_ORDER      = _cats["order"]
 
 
 def extract_flat_articles():
@@ -89,33 +77,6 @@ def split_into_chunks():
     return chunk_files
 
 
-def merge_chunks():
-    """Merge classified chunks into classified.json with cross-chunk dedup instructions."""
-    all_stories = []
-    seen_titles = set()
-
-    for i in range(1, 10):  # up to 9 chunks
-        path = os.path.join(CHUNKS_DIR, f"chunk_{i}_classified.json")
-        input_path = os.path.join(CHUNKS_DIR, f"chunk_{i}.json")
-        if not os.path.exists(path) or not os.path.exists(input_path):
-            break
-        data = load_json(path)
-        for story in data.get("stories", []):
-            tid = story.get("title", "").strip().lower()
-            if tid and tid not in seen_titles:
-                all_stories.append(story)
-                seen_titles.add(tid)
-
-    save_json(CLASSIFIED_JSON, {
-        "classified_at": datetime.now(timezone.utc).isoformat(),
-        "input_count": sum(len(load_json(os.path.join(CHUNKS_DIR, f"chunk_{i}.json"))["articles"])
-                           for i in range(1, 10)
-                           if os.path.exists(os.path.join(CHUNKS_DIR, f"chunk_{i}.json"))),
-        "stories": all_stories,
-    })
-    print(f"Merged chunks → {len(all_stories)} stories in {CLASSIFIED_JSON}")
-    return CLASSIFIED_JSON
-
 
 def cleanup_chunks():
     """Remove chunk files after successful digest generation."""
@@ -132,9 +93,8 @@ def validate_classified(path=CLASSIFIED_JSON):
     stories = data.get("stories", [])
     for s in stories:
         assert s.get("title"), "story missing title"
-        assert s.get("category") in list(CATEGORY_EMOJI.keys()) + ["прочее"], f"invalid category: {s.get('category')}"
+        assert s.get("category") in CATEGORY_EMOJI, f"invalid category: {s.get('category')}"
         assert isinstance(s.get("importance"), int), "importance must be int"
-        assert isinstance(s.get("article_indexes", []), list), "article_indexes must be list"
     print(f"Validated: {len(stories)} stories in {path}")
     return data
 
@@ -166,6 +126,7 @@ def assemble_digest():
 
     headline = stories[0]["title"]
     top5 = stories[:5]
+    top5_titles = {s["title"].strip().lower() for s in top5}
 
     # By category
     by_cat = defaultdict(list)
@@ -174,7 +135,8 @@ def assemble_digest():
 
     rubrics = {}
     for cat in CAT_ORDER:
-        items = by_cat.get(cat, [])[:5]
+        # Exclude stories already shown in the top-5 section
+        items = [s for s in by_cat.get(cat, []) if s["title"].strip().lower() not in top5_titles][:5]
         if items:
             rubrics[cat] = [{"title": s["title"]} for s in items]
 
@@ -193,17 +155,12 @@ def assemble_digest():
             rest_titles.append(t)
             used_titles.add(t.lower())
 
-    # Date — most common publish date
-    date_counts = Counter()
-    for s in stories:
-        pub = s.get("published")
-        if pub:
-            date_counts[pub[:10]] += 1
-    if date_counts:
-        iso = date_counts.most_common(1)[0][0]
-        parts = iso.split("-")
-        date_str = f"{parts[2]}.{parts[1]}.{parts[0]}"
-    else:
+    # Date — derived from pipeline run time (classified stories have no published field)
+    classified_at = data.get("classified_at", "")
+    try:
+        dt = datetime.fromisoformat(classified_at.replace("Z", "+00:00"))
+        date_str = dt.strftime("%d.%m.%Y")
+    except (ValueError, TypeError, AttributeError):
         date_str = datetime.now(timezone.utc).strftime("%d.%m.%Y")
 
     digest = {
@@ -279,7 +236,7 @@ def assemble_digest():
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="AI-driven digest assembler")
-    parser.add_argument("--phase", choices=["extract", "split", "merge", "cleanup", "validate-classified", "validate-summarized", "assemble"],
+    parser.add_argument("--phase", choices=["extract", "split", "cleanup", "validate-classified", "validate-summarized", "assemble"],
                         default="assemble")
     args = parser.parse_args()
 
@@ -287,8 +244,6 @@ def main():
         extract_flat_articles()
     elif args.phase == "split":
         split_into_chunks()
-    elif args.phase == "merge":
-        merge_chunks()
     elif args.phase == "cleanup":
         cleanup_chunks()
     elif args.phase == "validate-classified":

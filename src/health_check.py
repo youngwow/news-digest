@@ -18,37 +18,12 @@ import os
 import sys
 from datetime import datetime, timezone, timedelta
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from utils import CONFIG, DATA_DIR
 
-FILES_TO_CHECK = {
-    "raw_news.json": {
-        "required_keys": ["articles", "total", "collected_at"],
-        "min_articles": 1,
-        "desc": "RSS scraper output",
-    },
-    "analyzed_news.json": {
-        "required_keys": ["articles", "input_count", "deduped_at"],
-        "min_articles": 1,
-        "desc": "Deduplicated & analyzed articles",
-    },
-    "digest.json": {
-        "required_keys": ["digest", "total_unique"],
-        "min_articles": None,  # checked via nested key
-        "desc": "Structured digest",
-    },
-    "digest.md": {
-        "required_keys": None,  # text file, not JSON
-        "min_size_bytes": 200,
-        "desc": "Markdown digest",
-    },
-}
-
-# Source success threshold: at least this many must respond
-MIN_SOURCES_OK = 3
-# How many sources exist in sources.json (for ratio check)
-EXPECTED_SOURCES = 10
-# Max age before we consider output stale
-DEFAULT_MAX_AGE_MINUTES = 360  # 6 hours
+_health                 = CONFIG["health"]
+MIN_SOURCES_OK          = _health["min_sources_ok"]
+EXPECTED_SOURCES        = _health["expected_sources"]
+DEFAULT_MAX_AGE_MINUTES = _health["default_max_age_minutes"]
 
 
 def load_json(path: str):
@@ -131,48 +106,44 @@ def check_raw_news(path: str) -> dict:
     return result
 
 
-def check_analyzed_news(path: str, max_age: int) -> dict:
-    """Check analyzer output."""
+def check_classified(path: str, max_age: int) -> dict:
+    """Check merge_chunks.py output (classified.json)."""
     result = {"file": path, "status": "unknown", "issues": [], "details": {}}
 
     data, err = load_json(path)
     if err:
         result["status"] = "critical"
-        result["issues"].append(f"analyzed_news.json: {err}")
+        result["issues"].append(f"classified.json: {err}")
         return result
 
-    articles = data.get("articles", [])
+    stories = data.get("stories", [])
     input_count = data.get("input_count", 0)
     result["details"] = {
-        "groups": len(articles),
+        "stories": len(stories),
         "input_count": input_count,
     }
 
-    age = get_timestamp_age(data, ["deduped_at", "analyzed_at"])
+    age = get_timestamp_age(data, ["classified_at"])
     if age is not None:
         result["details"]["age_minutes"] = round(age, 1)
 
     issues = []
 
-    if len(articles) == 0:
-        issues.append(("critical", "0 article groups after dedup"))
+    if len(stories) == 0:
+        issues.append(("critical", "0 stories after classification — LLM step likely failed"))
     else:
-        # Check if analysis was completed (category/importance filled)
-        unanalyzed = sum(1 for a in articles if a.get("category") is None)
-        result["details"]["unanalyzed"] = unanalyzed
-        if unanalyzed > 0:
-            issues.append(("warning", f"{unanalyzed}/{len(articles)} groups have no category — analysis incomplete"))
+        uncategorized = sum(1 for s in stories if not s.get("category"))
+        result["details"]["uncategorized"] = uncategorized
+        if uncategorized > 0:
+            issues.append(("warning", f"{uncategorized}/{len(stories)} stories have no category"))
 
-        # Check importance distribution
-        imps = [a.get("importance", 0) for a in articles]
+        imps = [s.get("importance", 0) for s in stories]
         if imps:
             result["details"]["avg_importance"] = round(sum(imps) / len(imps), 1)
             result["details"]["max_importance"] = max(imps)
 
-        # Category coverage
-        cats = [a.get("category", "прочее") for a in articles]
         from collections import Counter
-        result["details"]["category_dist"] = dict(Counter(cats))
+        result["details"]["category_dist"] = dict(Counter(s.get("category", "прочее") for s in stories))
 
     if age is not None and age > max_age:
         issues.append(("warning", f"output is {age:.0f} min old (threshold: {max_age} min)"))
@@ -243,7 +214,7 @@ def check_digest_md(path: str) -> dict:
 
 def check_pipeline_status() -> dict:
     """Check pipeline_status.json (written by run.sh) for step-level failures."""
-    status_path = os.path.join(HERE, "pipeline_status.json")
+    status_path = os.path.join(DATA_DIR, "pipeline_status.json")
     result = {"file": status_path, "status": "unknown", "issues": [], "details": {}}
 
     data, err = load_json(status_path)
@@ -305,7 +276,7 @@ def check_pipeline_status() -> dict:
 
 def check_pipeline_log() -> dict:
     """Check pipeline.log for recent errors."""
-    log_path = os.path.join(HERE, "pipeline.log")
+    log_path = os.path.join(DATA_DIR, "pipeline.log")
     result = {"file": log_path, "status": "healthy", "issues": [], "details": {}}
 
     if not os.path.exists(log_path):
@@ -354,18 +325,18 @@ def main():
     checks = {}
 
     # Stage 1: raw_news.json
-    checks["raw_news"] = check_raw_news(os.path.join(HERE, "raw_news.json"))
+    checks["raw_news"] = check_raw_news(os.path.join(DATA_DIR, "raw_news.json"))
 
-    # Stage 2: analyzed_news.json
-    checks["analyzed_news"] = check_analyzed_news(
-        os.path.join(HERE, "analyzed_news.json"), args.max_age_minutes
+    # Stage 2: classified.json
+    checks["classified"] = check_classified(
+        os.path.join(DATA_DIR, "classified.json"), args.max_age_minutes
     )
 
     # Stage 3a: digest.json
-    checks["digest_json"] = check_digest_json(os.path.join(HERE, "digest.json"))
+    checks["digest_json"] = check_digest_json(os.path.join(DATA_DIR, "digest.json"))
 
     # Stage 3b: digest.md
-    checks["digest_md"] = check_digest_md(os.path.join(HERE, "digest.md"))
+    checks["digest_md"] = check_digest_md(os.path.join(DATA_DIR, "digest.md"))
 
     # Log file
     checks["pipeline_log"] = check_pipeline_log()
@@ -390,7 +361,7 @@ def main():
     }
 
     # Save report
-    report_path = os.path.join(HERE, "health.json")
+    report_path = os.path.join(DATA_DIR, "health.json")
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
@@ -409,7 +380,7 @@ def main():
             desc = {
                 "pipeline_status": "Pipeline steps",
                 "raw_news": "RSS scraper",
-                "analyzed_news": "Dedup & analysis",
+                "classified": "LLM classification",
                 "digest_json": "Digest JSON",
                 "digest_md": "Digest markdown",
                 "pipeline_log": "Pipeline log",

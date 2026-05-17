@@ -1,51 +1,30 @@
 #!/usr/bin/env python3
 """
 Direct ollama-cloud API call for summarization.
-Reads classified.json stories in chunks → sends to deepseek-v4-flash → writes summarized_chunk_N.json
+Reads classified.json stories in chunks → sends to deepseek-v4-flash → writes summarized.json
 """
 
-import json, os, sys, re
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
 import httpx
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-BASE_URL = "https://ollama.com/v1"
-MODEL = "deepseek-v4-flash"
+from utils import CONFIG, DATA_DIR, extract_json, load_api_key
 
-def load_api_key():
-    key = os.environ.get("OLLAMA_API_KEY", "")
-    if key:
-        return key
-    env_path = os.path.join(HERE, ".env")
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("OLLAMA_API_KEY="):
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if val:
-                        return val
-    return ""
+_llm  = CONFIG["llm"]
+BASE_URL = _llm["base_url"]
+MODEL    = _llm["model"]
+TIMEOUT  = _llm["timeout"]
 
-def extract_json(text):
-    text = text.strip()
-    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
-    start = text.find("[")
-    end = text.rfind("]")
-    if start >= 0 and end > start:
-        return text[start:end + 1]
-    return text
 
-def summarize_stories(stories, api_key):
+def summarize_stories(stories: list[dict], api_key: str) -> list[dict] | None:
     """Send stories to LLM, get back short_summary for each."""
-    simplified = []
-    for s in stories:
-        simplified.append({
-            "title": s["title"],
-            "category": s.get("category", ""),
-            "importance": s.get("importance", 5),
-        })
+    simplified = [
+        {"title": s["title"], "category": s.get("category", ""), "importance": s.get("importance", 5)}
+        for s in stories
+    ]
 
     prompt = f"""For each of these {len(simplified)} news stories, write a short_summary in Russian (1-2 sentences, max 200 chars, factual).
 
@@ -60,7 +39,7 @@ Return ONLY this JSON array:
 
 Keep the same order. Write ONLY the summary — no explanations."""
 
-    with httpx.Client(timeout=180) as client:
+    with httpx.Client(timeout=TIMEOUT) as client:
         resp = client.post(
             f"{BASE_URL}/chat/completions",
             headers={
@@ -70,8 +49,8 @@ Keep the same order. Write ONLY the summary — no explanations."""
             json={
                 "model": MODEL,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
-                "max_tokens": 16384,
+                "temperature": _llm["temperature"],
+                "max_tokens": _llm["max_tokens"],
             },
         )
 
@@ -84,23 +63,20 @@ Keep the same order. Write ONLY the summary — no explanations."""
     json_str = extract_json(content)
 
     try:
-        summaries = json.loads(json_str)
+        return json.loads(json_str)
     except json.JSONDecodeError as e:
         print(f"JSON parse error: {e}")
         print(f"Content (first 500): {content[:500]}")
         return None
 
-    return summaries
 
-
-def main():
+def main() -> None:
     api_key = load_api_key()
     if not api_key:
         print("ERROR: OLLAMA_API_KEY not found")
         sys.exit(1)
 
-    # Read classified.json
-    classified_path = os.path.join(HERE, "classified.json")
+    classified_path = os.path.join(DATA_DIR, "classified.json")
     with open(classified_path, encoding="utf-8") as f:
         data = json.load(f)
 
@@ -108,7 +84,7 @@ def main():
     total = len(all_stories)
     print(f"Total stories to summarize: {total}")
 
-    CHUNK_SIZE = 12
+    CHUNK_SIZE = CONFIG["pipeline"]["summarize_chunk_size"]
     all_summarized = []
 
     for idx in range(0, total, CHUNK_SIZE):
@@ -120,23 +96,20 @@ def main():
 
         summaries = summarize_stories(chunk, api_key)
         if summaries is None:
-            print(f"  FAILED — stopping")
+            print("  FAILED — stopping")
             break
 
-        # Merge summaries back into stories
         for s, summary_obj in zip(chunk, summaries):
             s["short_summary"] = summary_obj.get("short_summary", "").strip()
             all_summarized.append(s)
             print(f"  ✓ {s['title'][:60]}... → {s['short_summary'][:80]}...")
 
-    # Write summarized.json
-    out_path = os.path.join(HERE, "summarized.json")
+    out_path = os.path.join(DATA_DIR, "summarized.json")
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "summarized_at": "",
-            "input_count": total,
-            "stories": all_summarized,
-        }, f, ensure_ascii=False, indent=2)
+        json.dump(
+            {"summarized_at": datetime.now(timezone.utc).isoformat(), "input_count": total, "stories": all_summarized},
+            f, ensure_ascii=False, indent=2,
+        )
 
     print(f"\nDone: {len(all_summarized)}/{total} stories → {out_path}")
 
