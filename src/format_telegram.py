@@ -22,13 +22,13 @@ def load_digest(path: str) -> dict:
         return json.load(f)
 
 
-def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
-    """Split text into parts that fit within Telegram's character limit, breaking on line boundaries."""
+def _split_oversized_block(block: str, limit: int) -> list[str]:
+    """Fall-back line-level split for a single block that exceeds the limit."""
     parts: list[str] = []
     current: list[str] = []
     current_len = 0
-    for line in text.split("\n"):
-        line_len = len(line) + 1  # +1 for the newline join will add
+    for line in block.split("\n"):
+        line_len = len(line) + 1
         if current and current_len + line_len > limit:
             parts.append("\n".join(current))
             current = [line]
@@ -38,6 +38,42 @@ def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
             current_len += line_len
     if current:
         parts.append("\n".join(current))
+    return parts
+
+
+def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
+    """Split text into Telegram-sized parts on block boundaries (\\n\\n) where possible.
+
+    `format_digest` separates sections with blank lines, so packing blocks keeps
+    a category header together with its items instead of breaking mid-section.
+    Single blocks that exceed the limit fall back to line-level splitting.
+    """
+    blocks = text.split("\n\n")
+    parts: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    def flush() -> None:
+        nonlocal current, current_len
+        if current:
+            parts.append("\n\n".join(current))
+            current = []
+            current_len = 0
+
+    for block in blocks:
+        block_len = len(block) + (2 if current else 0)  # +2 for "\n\n" separator
+        if block_len > limit:
+            # Oversized block — flush what we have, then split this block line-by-line
+            flush()
+            parts.extend(_split_oversized_block(block, limit))
+            continue
+        if current and current_len + block_len > limit:
+            flush()
+            block_len = len(block)
+        current.append(block)
+        current_len += block_len
+    flush()
+
     return parts
 
 

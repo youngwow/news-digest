@@ -110,6 +110,49 @@ write_status_file() {
   "steps": ${json_steps}
 }
 STATUSEOF
+
+    # Append one-line history record (parses durations in Python for portability).
+    HISTORY_FILE="$SCRIPT_DIR/data/pipeline_history.jsonl"
+    local first_start last_end last_idx
+    if [ ${#STEP_RESULTS[@]} -gt 0 ]; then
+        first_start="${STEP_RESULTS[0]}"
+        # entry layout: name|exit_code|description|start_ts|end_ts
+        first_start="${first_start#*|*|*|}"; first_start="${first_start%%|*}"
+        last_idx=$(( ${#STEP_RESULTS[@]} - 1 ))   # macOS bash 3.2 has no negative indexing
+        last_end="${STEP_RESULTS[$last_idx]}"
+        last_end="${last_end##*|}"
+    else
+        first_start="$now"; last_end="$now"
+    fi
+
+    python3 - "$now" "$overall" "${#STEP_RESULTS[@]}" "${#STEP_FAILED_NAMES[@]}" \
+                    "$failures_json" "$first_start" "$last_end" "$HISTORY_FILE" <<'PYEOF'
+import json, sys
+from datetime import datetime
+
+now, overall, total, failed, failed_steps_json, start_ts, end_ts, hist_path = sys.argv[1:9]
+
+def _parse(ts):
+    # Handle the +ZZZZ form we emit
+    try:
+        return datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+
+start, end = _parse(start_ts), _parse(end_ts)
+duration_s = int((end - start).total_seconds()) if (start and end) else None
+
+record = {
+    "run_at":       now,
+    "overall":      overall,
+    "total_steps":  int(total),
+    "failed_count": int(failed),
+    "failed_steps": json.loads(failed_steps_json),
+    "duration_s":   duration_s,
+}
+with open(hist_path, "a", encoding="utf-8") as f:
+    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+PYEOF
 }
 
 mkdir -p "$SCRIPT_DIR/data"

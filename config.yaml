@@ -27,6 +27,11 @@ scraper:
   request_timeout: 20  # seconds per HTTP request
   max_redirects: 5
   user_agent: "Mozilla/5.0 (compatible; NewsDigestBot/1.0; +https://github.com/hermes)"
+  fetch_bodies: false               # off by default; flip to true for richer LLM context
+  body_max_chars: 3000              # truncate fetched body to this length
+  body_timeout: 10                  # seconds per body GET
+  body_concurrency: 8               # parallel fetchers
+  body_cache_retention_days: 14     # prune data/body_cache/ entries older than this
 
 pipeline:
   chunk_size: 15             # articles per classification chunk

@@ -24,6 +24,9 @@ _REQUIRED_SCHEMA: dict[str, dict[str, type | tuple[type, ...]]] = {
     "scraper": {
         "date_window_hours": (int, float), "request_timeout": (int, float),
         "max_redirects": int, "user_agent": str,
+        "fetch_bodies": bool, "body_max_chars": int,
+        "body_timeout": (int, float), "body_concurrency": int,
+        "body_cache_retention_days": int,
     },
     "pipeline": {"chunk_size": int},
     "telegram": {"message_limit": int},

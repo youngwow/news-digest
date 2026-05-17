@@ -1,0 +1,11 @@
+Classify these {n_articles} Russian news articles.
+Categories: политика, экономика, технологии, мир, спорт, наука, культура, прочее.
+Deduplicate: merge articles about the SAME EVENT into one story.
+Assign importance 1-10 per story.
+Use the body field (when present) for context — don't just rely on title.
+
+Articles:
+{articles_json}
+
+Return ONLY valid JSON:
+{{"stories":[{{"title":"best title","category":"cat","importance":1-10,"sources":["src"],"urls":["url"]}}]}}

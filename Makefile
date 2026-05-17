@@ -1,4 +1,4 @@
-.PHONY: install test lint format run health alerts unlock clean
+.PHONY: install test lint format run health show show-list history alerts unlock clean
 
 install:
 	pip install -r requirements.txt
@@ -18,6 +18,15 @@ run:
 
 health:
 	python3 src/health_check.py --json | python3 -m json.tool
+
+show:
+	@python3 src/show_digest.py
+
+show-list:
+	@python3 src/show_digest.py --list
+
+history:
+	@python3 src/show_history.py
 
 alerts:
 	@bash pipeline_check.sh; echo "---"; \

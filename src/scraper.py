@@ -28,6 +28,8 @@ REQUEST_TIMEOUT   = _scraper["request_timeout"]
 MAX_REDIRECTS     = _scraper["max_redirects"]
 DATE_WINDOW_HOURS = _scraper["date_window_hours"]
 USER_AGENT        = _scraper["user_agent"]
+FETCH_BODIES      = _scraper["fetch_bodies"]
+BODY_CONCURRENCY  = _scraper["body_concurrency"]
 CROSS_RUN_ENABLED = CONFIG["dedup"]["cross_run_enabled"]
 
 EMA_ALPHA = 0.3   # how much weight new observation gets in rolling averages
@@ -317,6 +319,11 @@ def main() -> None:
 
     # Cross-run dedup — skip URLs delivered in a recent digest
     articles = filter_cross_run(articles)
+
+    # Optional body enrichment (off by default; flip config.scraper.fetch_bodies)
+    if FETCH_BODIES and articles:
+        from fetch_bodies import enrich_articles
+        enrich_articles(articles, concurrency=BODY_CONCURRENCY)
 
     # Build output
     output = {

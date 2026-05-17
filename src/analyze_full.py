@@ -70,13 +70,17 @@ def extract_flat_articles():
     articles = data.get("articles", [])
     flat = []
     for a in articles:
-        flat.append({
+        entry = {
             "title": a.get("title", "").strip(),
             "summary": a.get("summary", "").strip(),
             "published": a.get("published"),
             "source": a.get("source", ""),
             "url": a.get("url", ""),
-        })
+        }
+        body = a.get("body", "").strip()
+        if body:
+            entry["body"] = body
+        flat.append(entry)
     save_json(ARTICLES_JSON, {
         "collected_at": data.get("collected_at"),
         "total": len(flat),

@@ -21,10 +21,11 @@ from threading import Lock
 
 import httpx
 
-from utils import CONFIG, DATA_DIR, extract_json, get_logger, load_env_secret
+from utils import CONFIG, DATA_DIR, PROJECT_ROOT, extract_json, get_logger, load_env_secret
 
 CHUNKS_DIR = os.path.join(DATA_DIR, "chunks")
 CACHE_DIR  = os.path.join(DATA_DIR, "chunk_cache")
+PROMPTS_DIR = os.path.join(PROJECT_ROOT, "prompts")
 _llm = CONFIG["llm"]
 CLASSIFY_CONCURRENCY  = _llm["classify_concurrency"]
 CACHE_RETENTION_DAYS  = _llm["cache_retention_days"]
@@ -49,6 +50,22 @@ MAX_TOKENS    = ACTIVE["max_tokens"]
 API_KEY_ENV   = ACTIVE.get("api_key_env")
 
 log = get_logger("call_ollama")
+
+
+def _resolve_prompt_path() -> str:
+    """Prefer prompts/classify.{provider}.txt; fall back to prompts/classify.txt."""
+    override = os.path.join(PROMPTS_DIR, f"classify.{PROVIDER_NAME}.txt")
+    default = os.path.join(PROMPTS_DIR, "classify.txt")
+    if os.path.exists(override):
+        return override
+    if not os.path.exists(default):
+        raise SystemExit(f"missing classification prompt: {default}")
+    return default
+
+
+PROMPT_PATH = _resolve_prompt_path()
+with open(PROMPT_PATH, encoding="utf-8") as _f:
+    PROMPT_TEMPLATE = _f.read()
 
 # Cache stats are aggregated across worker threads
 _cache_stats = {"hits": 0, "misses": 0}
@@ -109,17 +126,7 @@ def classify_chunk(chunk_num: int) -> bool:
         headers["Authorization"] = f"Bearer {api_key}"
 
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
-
-    prompt = f"""Classify these {len(articles)} Russian news articles.
-Categories: политика, экономика, технологии, мир, спорт, наука, культура, прочее.
-Deduplicate: merge articles about the SAME EVENT into one story.
-Assign importance 1-10 per story.
-
-Articles:
-{articles_json}
-
-Return ONLY valid JSON:
-{{"stories":[{{"title":"best title","category":"cat","importance":1-10,"sources":["src"],"urls":["url"]}}]}}"""
+    prompt = PROMPT_TEMPLATE.format(n_articles=len(articles), articles_json=articles_json)
 
     log.info("chunk_%d: sending %d articles to %s (%d chars)",
              chunk_num, len(articles), MODEL, len(prompt))
@@ -197,6 +204,7 @@ def classify_all() -> bool:
     chunk_nums = sorted(int(os.path.basename(f).removeprefix("chunk_").removesuffix(".json"))
                         for f in files)
     log.info("classify: active provider = %s (%s, model=%s)", PROVIDER_NAME, BASE_URL, MODEL)
+    log.info("classify: using prompt %s", PROMPT_PATH)
     log.info("classifying %d chunks with %d workers", len(chunk_nums), CLASSIFY_CONCURRENCY)
 
     failures: list[int] = []
