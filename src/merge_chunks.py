@@ -157,10 +157,6 @@ def dedup_stories(stories: list[dict]) -> list[dict]:
             total = wi | wj
             overlap = len(shared) / len(total) if total else 0
 
-            # Merge conditions:
-            # 1. >30% word overlap
-            # 2. >=3 shared significant words
-            # 3. One title fully contains the other (>15 chars)
             if (overlap > OVERLAP_THRESHOLD or len(shared) >= SHARED_WORDS_MIN
                     or (len(ti) > CONTAINMENT_MIN_LEN and ti in tj)
                     or (len(tj) > CONTAINMENT_MIN_LEN and tj in ti)):

@@ -20,11 +20,13 @@ from datetime import datetime, timedelta
 from threading import Lock
 
 import httpx
+from json_repair import repair_json
 
 from utils import CONFIG, DATA_DIR, PROJECT_ROOT, extract_json, get_logger, load_env_secret
 
 CHUNKS_DIR = os.path.join(DATA_DIR, "chunks")
 CACHE_DIR  = os.path.join(DATA_DIR, "chunk_cache")
+FAILED_DIR = os.path.join(DATA_DIR, "failed_chunks")
 PROMPTS_DIR = os.path.join(PROJECT_ROOT, "prompts")
 _llm = CONFIG["llm"]
 CLASSIFY_CONCURRENCY  = _llm["classify_concurrency"]
@@ -66,6 +68,41 @@ def _resolve_prompt_path() -> str:
 PROMPT_PATH = _resolve_prompt_path()
 with open(PROMPT_PATH, encoding="utf-8") as _f:
     PROMPT_TEMPLATE = _f.read()
+
+
+def _dump_failed(chunk_num: int, raw_content: str) -> str | None:
+    """Save the raw LLM response to disk so the user can inspect it later."""
+    try:
+        os.makedirs(FAILED_DIR, exist_ok=True)
+        path = os.path.join(FAILED_DIR, f"chunk_{chunk_num}_{int(time.time())}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(raw_content)
+        return path
+    except OSError as e:
+        log.warning("chunk_%d: could not save failed output: %s", chunk_num, e)
+        return None
+
+
+def _parse_with_repair(json_str: str, raw_content: str, chunk_num: int) -> dict | None:
+    """Strict JSON parse with a json-repair fallback for sloppy LLM output."""
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        log.warning("chunk_%d: invalid JSON (%s); attempting repair", chunk_num, e)
+
+    try:
+        repaired = repair_json(json_str, return_objects=False)
+        parsed = json.loads(repaired)
+        log.info("chunk_%d: JSON repaired successfully", chunk_num)
+        return parsed
+    except (ValueError, json.JSONDecodeError) as e:
+        path = _dump_failed(chunk_num, raw_content)
+        log.error("chunk_%d: JSON unrepairable: %s", chunk_num, e)
+        if path:
+            log.error("chunk_%d: full raw output saved to %s", chunk_num, path)
+        else:
+            log.error("chunk_%d: raw content (first 1500 chars): %s", chunk_num, raw_content[:1500])
+        return None
 
 # Cache stats are aggregated across worker threads
 _cache_stats = {"hits": 0, "misses": 0}
@@ -166,11 +203,8 @@ def classify_chunk(chunk_num: int) -> bool:
     content = result["choices"][0]["message"]["content"]
     json_str = extract_json(content)
 
-    try:
-        parsed = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        log.error("chunk_%d: JSON parse error: %s", chunk_num, e)
-        log.error("chunk_%d: raw content (first 500 chars): %s", chunk_num, content[:500])
+    parsed = _parse_with_repair(json_str, content, chunk_num)
+    if parsed is None:
         return False
 
     stories = parsed.get("stories", [])
