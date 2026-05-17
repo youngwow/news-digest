@@ -7,9 +7,9 @@ Reads raw_news.json / classified.json and writes articles.json, chunks/, and dig
 import os
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from utils import CONFIG, DATA_DIR, get_logger, load_json, save_json
+from utils import CONFIG, DATA_DIR, get_logger, load_json, mark_urls_seen, save_json
 
 log = get_logger("analyze_full")
 
@@ -19,12 +19,49 @@ CLASSIFIED_JSON = os.path.join(DATA_DIR, "classified.json")
 DIGEST_JSON     = os.path.join(DATA_DIR, "digest.json")
 DIGEST_MD       = os.path.join(DATA_DIR, "digest.md")
 CHUNKS_DIR      = os.path.join(DATA_DIR, "chunks")
+DIGESTS_DIR     = os.path.join(DATA_DIR, "digests")
 
 _pipeline      = CONFIG["pipeline"]
 _cats          = CONFIG["categories"]
 CHUNK_SIZE     = _pipeline["chunk_size"]
 CATEGORY_EMOJI = _cats["emoji"]
 CAT_ORDER      = _cats["order"]
+ARCHIVE_RETENTION_DAYS    = CONFIG["archive"]["retention_days"]
+CROSS_RUN_RETENTION_DAYS  = CONFIG["dedup"]["cross_run_retention_days"]
+
+
+def _archive_digest(full: dict) -> None:
+    """Write a timestamped snapshot under data/digests/, prune entries older than retention."""
+    os.makedirs(DIGESTS_DIR, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M")
+    snapshot_path = os.path.join(DIGESTS_DIR, f"digest-{ts}.json")
+    save_json(snapshot_path, full)
+    log.info("Archived digest snapshot → %s", snapshot_path)
+
+    cutoff = (datetime.now() - timedelta(days=ARCHIVE_RETENTION_DAYS)).timestamp()
+    removed = 0
+    for entry in os.listdir(DIGESTS_DIR):
+        path = os.path.join(DIGESTS_DIR, entry)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass
+    if removed:
+        log.info("digests: pruned %d snapshots older than %d days",
+                 removed, ARCHIVE_RETENTION_DAYS)
+
+
+def _record_delivered_urls(full: dict) -> None:
+    """Mark every URL across all_stories as seen so future runs can dedup against it."""
+    urls = []
+    for story in full.get("all_stories", []):
+        urls.extend(story.get("urls", []))
+    if urls:
+        mark_urls_seen(urls, CROSS_RUN_RETENTION_DAYS)
+        log.info("Marked %d URLs as seen (retention: %d days)",
+                 len(urls), CROSS_RUN_RETENTION_DAYS)
 
 
 def extract_flat_articles():
@@ -164,6 +201,9 @@ def assemble_digest():
 
     save_json(DIGEST_JSON, full)
     log.info("Saved %s", DIGEST_JSON)
+
+    _archive_digest(full)
+    _record_delivered_urls(full)
 
     # Markdown — titles only, no summaries
     lines = [

@@ -10,39 +10,86 @@ Usage:
 
 import argparse
 import glob
+import hashlib
 import json
 import os
+import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+from threading import Lock
 
 import httpx
 
 from utils import CONFIG, DATA_DIR, extract_json, get_logger, load_api_key
 
 CHUNKS_DIR = os.path.join(DATA_DIR, "chunks")
+CACHE_DIR  = os.path.join(DATA_DIR, "chunk_cache")
 _llm = CONFIG["llm"]
-BASE_URL            = _llm["base_url"]
-MODEL               = _llm["model"]
-MAX_RETRIES         = _llm["max_retries"]
-TIMEOUT             = _llm["timeout"]
-CLASSIFY_CONCURRENCY = _llm["classify_concurrency"]
+BASE_URL              = _llm["base_url"]
+MODEL                 = _llm["model"]
+MAX_RETRIES           = _llm["max_retries"]
+TIMEOUT               = _llm["timeout"]
+CLASSIFY_CONCURRENCY  = _llm["classify_concurrency"]
+CACHE_RETENTION_DAYS  = _llm["cache_retention_days"]
 
 log = get_logger("call_ollama")
+
+# Cache stats are aggregated across worker threads
+_cache_stats = {"hits": 0, "misses": 0}
+_cache_stats_lock = Lock()
+
+
+def _chunk_hash(articles: list[dict]) -> str:
+    blob = json.dumps(articles, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _prune_cache() -> None:
+    """Delete cached chunk classifications older than CACHE_RETENTION_DAYS."""
+    if not os.path.isdir(CACHE_DIR):
+        return
+    cutoff = (datetime.now() - timedelta(days=CACHE_RETENTION_DAYS)).timestamp()
+    removed = 0
+    for entry in os.listdir(CACHE_DIR):
+        path = os.path.join(CACHE_DIR, entry)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass
+    if removed:
+        log.info("chunk_cache: pruned %d expired entries", removed)
 
 
 def classify_chunk(chunk_num: int) -> bool:
     chunk_path = os.path.join(CHUNKS_DIR, f"chunk_{chunk_num}.json")
     out_path = os.path.join(CHUNKS_DIR, f"chunk_{chunk_num}_classified.json")
 
+    with open(chunk_path, encoding="utf-8") as f:
+        chunk_data = json.load(f)
+
+    articles = chunk_data.get("articles", [])
+
+    # Cache check: content-addressed, so chunk reorderings don't cause stale hits
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache_key = _chunk_hash(articles)
+    cache_path = os.path.join(CACHE_DIR, f"{cache_key}.json")
+    if os.path.exists(cache_path):
+        shutil.copy(cache_path, out_path)
+        with _cache_stats_lock:
+            _cache_stats["hits"] += 1
+        log.info("chunk_%d: cache hit (%s), skipping API call", chunk_num, cache_key[:8])
+        return True
+    with _cache_stats_lock:
+        _cache_stats["misses"] += 1
+
     api_key = load_api_key()
     if not api_key:
         log.error("chunk_%d: OLLAMA_API_KEY not found", chunk_num)
         return False
 
-    with open(chunk_path, encoding="utf-8") as f:
-        chunk_data = json.load(f)
-
-    articles = chunk_data.get("articles", [])
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
 
     prompt = f"""Classify these {len(articles)} Russian news articles.
@@ -110,12 +157,22 @@ Return ONLY valid JSON:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
+    # Populate the cache so a retry within retention skips this API call
+    try:
+        shutil.copy(out_path, cache_path)
+    except OSError as e:
+        log.warning("chunk_%d: failed to write cache entry: %s", chunk_num, e)
+
     log.info("chunk_%d: %d stories → %s", chunk_num, len(stories), out_path)
     return True
 
 
 def classify_all() -> bool:
     """Discover chunks/chunk_N.json files and classify them in parallel."""
+    _prune_cache()
+    _cache_stats["hits"] = 0
+    _cache_stats["misses"] = 0
+
     pattern = os.path.join(CHUNKS_DIR, "chunk_*.json")
     files = [f for f in glob.glob(pattern) if "_classified" not in os.path.basename(f)]
     if not files:
@@ -138,6 +195,8 @@ def classify_all() -> bool:
                 ok = False
             if not ok:
                 failures.append(n)
+
+    log.info("chunk_cache: %d hits, %d misses", _cache_stats["hits"], _cache_stats["misses"])
 
     if failures:
         log.error("classify: %d/%d chunks failed: %s",

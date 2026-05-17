@@ -88,7 +88,7 @@ def _good_config() -> dict:
         "llm": {
             "base_url": "https://x", "model": "m", "temperature": 0.3,
             "max_tokens": 1024, "timeout": 30, "max_retries": 3,
-            "classify_concurrency": 4,
+            "classify_concurrency": 4, "cache_retention_days": 7,
         },
         "scraper": {
             "date_window_hours": 8, "request_timeout": 20,
@@ -103,6 +103,12 @@ def _good_config() -> dict:
         "dedup": {
             "overlap_threshold": 0.3, "shared_words_min": 3,
             "containment_min_len": 15,
+            "cross_run_enabled": True, "cross_run_retention_days": 3,
+        },
+        "archive": {"retention_days": 30},
+        "heuristics": {
+            "multi_source_max_boost": 2, "recency_window_hours": 2,
+            "recency_boost": 1, "source_weight_max_boost": 1,
         },
         "categories": {
             "order": ["политика"],

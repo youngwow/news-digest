@@ -9,6 +9,7 @@
       "topic": "общие / политика",
       "update_frequency": "~5–10 записей в час",
       "item_count_sample": 30,
+      "weight": 1.0,
       "notes": "Независимое издание (иноагент), Рига. RSS всех разделов."
     },
     {
@@ -18,7 +19,8 @@
       "topic": "новости / аналитика",
       "update_frequency": "~5–10 записей в час",
       "item_count_sample": 45,
-      "notes": "Британская госкорпорация, русская служба. Стабильный RSS."
+      "notes": "Британская госкорпорация, русская служба. Стабильный RSS.",
+      "weight": 1.0
     },
     {
       "name": "Deutsche Welle (рус.)",
@@ -27,7 +29,8 @@
       "topic": "новости / культура",
       "update_frequency": "~3–5 записей в час",
       "item_count_sample": 17,
-      "notes": "Немецкая медиакомпания (запрещена в РФ). RDF-формат, feedparser поддерживает."
+      "notes": "Немецкая медиакомпания (запрещена в РФ). RDF-формат, feedparser поддерживает.",
+      "weight": 1.0
     },
     {
       "name": "Медиазона",
@@ -36,7 +39,8 @@
       "topic": "суды / репрессии",
       "update_frequency": "~2–5 записей в день",
       "item_count_sample": 1,
-      "notes": "Независимое издание о судах и репрессиях (иноагент). RSS скудный."
+      "notes": "Независимое издание о судах и репрессиях (иноагент). RSS скудный.",
+      "weight": 1.0
     },
     {
       "name": "Такие дела",
@@ -45,7 +49,8 @@
       "topic": "социальная журналистика",
       "update_frequency": "~2–5 записей в день",
       "item_count_sample": 10,
-      "notes": "Социальная журналистика, права человека (иноагент)."
+      "notes": "Социальная журналистика, права человека (иноагент).",
+      "weight": 1.0
     },
     {
       "name": "Холод",
@@ -54,7 +59,8 @@
       "topic": "документальные истории",
       "update_frequency": "~2–5 записей в день",
       "item_count_sample": 100,
-      "notes": "Документальные истории и журналистика фактов (иноагент). Очень насыщенный фид."
+      "notes": "Документальные истории и журналистика фактов (иноагент). Очень насыщенный фид.",
+      "weight": 1.0
     },
     {
       "name": "SOTA",
@@ -63,7 +69,8 @@
       "topic": "новости / протесты",
       "update_frequency": "~5–10 записей в час",
       "item_count_sample": 10,
-      "notes": "Оперативные новости и репортажи (иноагент)."
+      "notes": "Оперативные новости и репортажи (иноагент).",
+      "weight": 1.0
     },
     {
       "name": "Вёрстка",
@@ -72,7 +79,8 @@
       "topic": "общество / последствия войны",
       "update_frequency": "~2–5 записей в день",
       "item_count_sample": 10,
-      "notes": "Жизнь российского общества после вторжения (иноагент). WordPress RSS."
+      "notes": "Жизнь российского общества после вторжения (иноагент). WordPress RSS.",
+      "weight": 1.0
     },
     {
       "name": "Кедр.медиа",
@@ -81,7 +89,8 @@
       "topic": "экология",
       "update_frequency": "~1–3 записи в день",
       "item_count_sample": 10,
-      "notes": "Экологическое медиа (иноагент). WordPress RSS."
+      "notes": "Экологическое медиа (иноагент). WordPress RSS.",
+      "weight": 1.0
     },
     {
       "name": "Вот Так",
@@ -90,26 +99,78 @@
       "topic": "новости / антивоенная повестка",
       "update_frequency": "~3–5 записей в час",
       "item_count_sample": 28,
-      "notes": "Антивоенное СМИ (Польша, проект Belsat)."
+      "notes": "Антивоенное СМИ (Польша, проект Belsat).",
+      "weight": 1.0
     }
   ],
   "excluded": [
-    {"name": "Дождь / TV Rain", "reason": "RSS URL отдаёт HTML-страницу выбора фидов, не сам RSS"},
-    {"name": "Новая газета. Европа", "reason": "RSS URL возвращает 404"},
-    {"name": "The Moscow Times", "reason": "RSS редиректит на moscowtimes.ru, домен не резолвится"},
-    {"name": "The Insider", "reason": "RSS URL отдаёт HTML (Next.js SPA), не RSS"},
-    {"name": "Важные истории / iStories", "reason": "RSS возвращает 403 Forbidden"},
-    {"name": "Проект / Proekt", "reason": "RSS возвращает 403 Forbidden"},
-    {"name": "Радио Свобода", "reason": "RSS URL возвращает 404"},
-    {"name": "Настоящее Время", "reason": "RSS URL возвращает 404"},
-    {"name": "ОВД-Инфо", "reason": "RSS URL возвращает 404"},
-    {"name": "7x7", "reason": "RSS URL возвращает 404"},
-    {"name": "Бумага", "reason": "Не удалось подключиться (connection failed)"},
-    {"name": "ASTRA", "reason": "RSS URL возвращает 404"},
-    {"name": "Republic", "reason": "Не удалось подключиться (connection failed)"},
-    {"name": "Re: Russia", "reason": "RSS URL отдаёт HTML, не RSS"},
-    {"name": "Новая вкладка", "reason": "Не удалось подключиться (connection failed)"},
-    {"name": "Центр «Досье»", "reason": "RSS URL отдаёт HTML, не RSS"},
-    {"name": "Arzamas", "reason": "RSS URL возвращает 404"}
+    {
+      "name": "Дождь / TV Rain",
+      "reason": "RSS URL отдаёт HTML-страницу выбора фидов, не сам RSS"
+    },
+    {
+      "name": "Новая газета. Европа",
+      "reason": "RSS URL возвращает 404"
+    },
+    {
+      "name": "The Moscow Times",
+      "reason": "RSS редиректит на moscowtimes.ru, домен не резолвится"
+    },
+    {
+      "name": "The Insider",
+      "reason": "RSS URL отдаёт HTML (Next.js SPA), не RSS"
+    },
+    {
+      "name": "Важные истории / iStories",
+      "reason": "RSS возвращает 403 Forbidden"
+    },
+    {
+      "name": "Проект / Proekt",
+      "reason": "RSS возвращает 403 Forbidden"
+    },
+    {
+      "name": "Радио Свобода",
+      "reason": "RSS URL возвращает 404"
+    },
+    {
+      "name": "Настоящее Время",
+      "reason": "RSS URL возвращает 404"
+    },
+    {
+      "name": "ОВД-Инфо",
+      "reason": "RSS URL возвращает 404"
+    },
+    {
+      "name": "7x7",
+      "reason": "RSS URL возвращает 404"
+    },
+    {
+      "name": "Бумага",
+      "reason": "Не удалось подключиться (connection failed)"
+    },
+    {
+      "name": "ASTRA",
+      "reason": "RSS URL возвращает 404"
+    },
+    {
+      "name": "Republic",
+      "reason": "Не удалось подключиться (connection failed)"
+    },
+    {
+      "name": "Re: Russia",
+      "reason": "RSS URL отдаёт HTML, не RSS"
+    },
+    {
+      "name": "Новая вкладка",
+      "reason": "Не удалось подключиться (connection failed)"
+    },
+    {
+      "name": "Центр «Досье»",
+      "reason": "RSS URL отдаёт HTML, не RSS"
+    },
+    {
+      "name": "Arzamas",
+      "reason": "RSS URL возвращает 404"
+    }
   ]
 }

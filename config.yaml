@@ -5,9 +5,10 @@ llm:
   model: "gemma4:31b"
   temperature: 0.3
   max_tokens: 16384
-  timeout: 180              # seconds per API request
-  max_retries: 3            # attempts before giving up on a chunk
-  classify_concurrency: 4   # parallel chunk classification workers
+  timeout: 180                # seconds per API request
+  max_retries: 3              # attempts before giving up on a chunk
+  classify_concurrency: 4     # parallel chunk classification workers
+  cache_retention_days: 7     # prune chunk_cache/ entries older than this
 
 scraper:
   date_window_hours: 8
@@ -27,9 +28,20 @@ health:
   default_max_age_minutes: 360  # 6 hours
 
 dedup:
-  overlap_threshold: 0.30   # merge if shared-word ratio exceeds this
-  shared_words_min: 3       # merge if at least this many significant words match
-  containment_min_len: 15   # min title length to trigger substring containment check
+  overlap_threshold: 0.30          # merge if shared-word ratio exceeds this
+  shared_words_min: 3              # merge if at least this many significant words match
+  containment_min_len: 15          # min title length to trigger substring containment check
+  cross_run_enabled: true          # filter URLs already delivered in a recent digest
+  cross_run_retention_days: 3      # remember delivered URLs for this many days
+
+archive:
+  retention_days: 30               # prune data/digests/ snapshots older than this
+
+heuristics:
+  multi_source_max_boost: 2        # cap on +importance from sources covering same story
+  recency_window_hours: 2          # articles published within this window get a boost
+  recency_boost: 1                 # importance added for recent stories
+  source_weight_max_boost: 1       # cap on +importance from high-trust sources
 
 categories:
   order:

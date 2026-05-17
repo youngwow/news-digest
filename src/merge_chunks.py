@@ -5,15 +5,25 @@ Reads chunk_N_classified.json from chunks/ → deduplicates within categories �
 """
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from utils import CONFIG, DATA_DIR, get_logger
 
 CHUNKS_DIR = os.path.join(DATA_DIR, "chunks")
+ARTICLES_JSON = os.path.join(DATA_DIR, "articles.json")
+SOURCES_FILE  = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "sources.json")
+
 _dedup = CONFIG["dedup"]
 OVERLAP_THRESHOLD   = _dedup["overlap_threshold"]
 SHARED_WORDS_MIN    = _dedup["shared_words_min"]
 CONTAINMENT_MIN_LEN = _dedup["containment_min_len"]
+
+_heur = CONFIG["heuristics"]
+MULTI_SOURCE_MAX_BOOST   = _heur["multi_source_max_boost"]
+RECENCY_WINDOW_HOURS     = _heur["recency_window_hours"]
+RECENCY_BOOST            = _heur["recency_boost"]
+SOURCE_WEIGHT_MAX_BOOST  = _heur["source_weight_max_boost"]
 
 log = get_logger("merge_chunks")
 
@@ -44,6 +54,77 @@ def merge_stories(s1: dict, s2: dict) -> dict:
     if len(s2.get("short_summary", "")) > len(s1.get("short_summary", "")):
         s1["short_summary"] = s2["short_summary"]
     return s1
+
+
+def load_url_published_map() -> dict[str, str]:
+    """Build {url: published-ISO} from articles.json (best-effort, empty on miss)."""
+    if not os.path.exists(ARTICLES_JSON):
+        return {}
+    try:
+        with open(ARTICLES_JSON, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    out: dict[str, str] = {}
+    for a in data.get("articles", []):
+        url = a.get("url")
+        pub = a.get("published")
+        if url and pub:
+            out[url] = pub
+    return out
+
+
+def load_source_weights() -> dict[str, float]:
+    """Read sources.json and return {source_name: weight} (default 1.0 if missing)."""
+    if not os.path.exists(SOURCES_FILE):
+        return {}
+    try:
+        with open(SOURCES_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {s["name"]: float(s.get("weight", 1.0)) for s in data.get("sources", [])}
+
+
+def boost_importance(
+    story: dict,
+    url_published: dict[str, str],
+    source_weights: dict[str, float],
+    now: datetime | None = None,
+) -> int:
+    """Apply multi-source / recency / source-weight heuristics. Returns the new importance (≤10)."""
+    importance = int(story.get("importance", 5))
+
+    # Multi-source boost — +1 per extra unique source, capped
+    unique_sources = len(set(story.get("sources", [])))
+    if unique_sources > 1:
+        importance += min(unique_sources - 1, MULTI_SOURCE_MAX_BOOST)
+
+    # Source-weight boost — +floor(max_weight - 1), capped
+    if source_weights:
+        weights = [source_weights.get(src, 1.0) for src in story.get("sources", [])]
+        if weights:
+            extra = int(max(weights) - 1.0)
+            if extra > 0:
+                importance += min(extra, SOURCE_WEIGHT_MAX_BOOST)
+
+    # Recency boost — any underlying article published within window
+    if RECENCY_BOOST and url_published:
+        ref_now = now or datetime.now(timezone.utc)
+        cutoff = ref_now - timedelta(hours=RECENCY_WINDOW_HOURS)
+        for url in story.get("urls", []):
+            pub_str = url_published.get(url)
+            if not pub_str:
+                continue
+            try:
+                pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if pub_dt >= cutoff:
+                importance += RECENCY_BOOST
+                break
+
+    return min(importance, 10)
 
 
 def dedup_stories(stories: list[dict]) -> list[dict]:
@@ -112,6 +193,18 @@ def main() -> None:
 
     deduped = dedup_stories(all_stories)
     log.info("After dedup: %d stories (removed %d duplicates)", len(deduped), raw_count - len(deduped))
+
+    # Heuristic importance boosts — multi-source, recency, source-weight
+    url_published = load_url_published_map()
+    source_weights = load_source_weights()
+    boosted = 0
+    for s in deduped:
+        orig = int(s.get("importance", 5))
+        new = boost_importance(s, url_published, source_weights)
+        if new != orig:
+            boosted += 1
+        s["importance"] = new
+    log.info("Heuristics: boosted importance on %d/%d stories", boosted, len(deduped))
 
     out_path = os.path.join(DATA_DIR, "classified.json")
     with open(out_path, "w", encoding="utf-8") as f:

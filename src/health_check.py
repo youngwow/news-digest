@@ -62,6 +62,35 @@ def get_timestamp_age(data: dict, keys: list[str]) -> float | None:
     return None
 
 
+def check_source_metrics(path: str) -> dict:
+    """Warn when any source's rolling success rate falls below 0.5."""
+    result = {"file": path, "status": "healthy", "issues": [], "details": {}}
+    if not os.path.exists(path):
+        result["details"]["note"] = "no source_metrics.json yet — scraper hasn't run with metrics"
+        return result
+    try:
+        with open(path, encoding="utf-8") as f:
+            metrics = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        result["status"] = "warning"
+        result["issues"].append(("warning", f"source_metrics.json: {e}"))
+        return result
+
+    degraded = []
+    for name, m in metrics.items():
+        rate = m.get("success_rate_ema")
+        if isinstance(rate, (int, float)) and rate < 0.5:
+            degraded.append((name, round(rate, 2)))
+
+    result["details"]["total_sources"] = len(metrics)
+    if degraded:
+        for name, rate in degraded:
+            result["issues"].append(("warning",
+                f"source '{name}' rolling success rate is {rate} (< 0.5)"))
+        result["status"] = "warning"
+    return result
+
+
 def check_raw_news(path: str) -> dict:
     """Check scraper output."""
     result = {"file": path, "status": "unknown", "issues": [], "details": {}}
@@ -344,6 +373,9 @@ def main():
     # Pipeline step-level status (from run.sh's pipeline_status.json)
     checks["pipeline_status"] = check_pipeline_status()
 
+    # Per-source rolling health (from scraper's source_metrics.json)
+    checks["source_metrics"] = check_source_metrics(os.path.join(DATA_DIR, "source_metrics.json"))
+
     # Determine overall status
     statuses = [c["status"] for c in checks.values()]
     if "critical" in statuses:
@@ -384,6 +416,7 @@ def main():
                 "digest_json": "Digest JSON",
                 "digest_md": "Digest markdown",
                 "pipeline_log": "Pipeline log",
+                "source_metrics": "Source health",
             }[name]
 
             print(f"  {icon} {desc}: {check['status']}")

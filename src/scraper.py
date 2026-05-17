@@ -8,24 +8,29 @@ deduplicates by URL, and writes raw_news.json.
 import json
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import feedparser
 import httpx
 
-from utils import CONFIG, DATA_DIR, get_logger
+from utils import CONFIG, DATA_DIR, get_logger, load_seen_urls, save_json
 
 # ── config ──────────────────────────────────────────────────────────
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOURCES_FILE = os.path.join(_ROOT, "sources.json")
 OUTPUT_FILE  = os.path.join(DATA_DIR, "raw_news.json")
+METRICS_FILE = os.path.join(DATA_DIR, "source_metrics.json")
 
 _scraper          = CONFIG["scraper"]
 REQUEST_TIMEOUT   = _scraper["request_timeout"]
 MAX_REDIRECTS     = _scraper["max_redirects"]
 DATE_WINDOW_HOURS = _scraper["date_window_hours"]
 USER_AGENT        = _scraper["user_agent"]
+CROSS_RUN_ENABLED = CONFIG["dedup"]["cross_run_enabled"]
+
+EMA_ALPHA = 0.3   # how much weight new observation gets in rolling averages
 
 log = get_logger("scraper")
 
@@ -163,6 +168,66 @@ def deduplicate(articles: list[dict]) -> list[dict]:
     return result
 
 
+def filter_cross_run(articles: list[dict]) -> list[dict]:
+    """Drop articles whose URLs are present in seen_urls.json (delivered in a recent digest)."""
+    if not CROSS_RUN_ENABLED:
+        return articles
+    seen = load_seen_urls()
+    if not seen:
+        return articles
+    kept = [a for a in articles if a.get("url") not in seen]
+    dropped = len(articles) - len(kept)
+    if dropped:
+        log.info("Cross-run dedup: dropped %d URLs already delivered in a recent digest", dropped)
+    return kept
+
+
+# ── per-source metrics ──────────────────────────────────────────────
+
+def _ema(prev: float | None, current: float, alpha: float = EMA_ALPHA) -> float:
+    """Single-step exponential moving average; seeds from `current` on first sample."""
+    if prev is None:
+        return float(current)
+    return alpha * float(current) + (1 - alpha) * float(prev)
+
+
+def _load_source_metrics() -> dict[str, dict]:
+    if not os.path.exists(METRICS_FILE):
+        return {}
+    try:
+        with open(METRICS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def update_source_metrics(samples: list[dict]) -> None:
+    """Merge per-source observations from this run into data/source_metrics.json.
+
+    Each sample: {name, success: bool, latency_ms: float, article_count: int}.
+    """
+    metrics = _load_source_metrics()
+    now = datetime.now(timezone.utc).isoformat()
+
+    for s in samples:
+        name = s["name"]
+        entry = metrics.get(name, {})
+        entry["fetches_total"]      = entry.get("fetches_total", 0) + 1
+        entry["successes_total"]    = entry.get("successes_total", 0) + (1 if s["success"] else 0)
+        entry["success_rate_ema"]   = _ema(entry.get("success_rate_ema"),
+                                            1.0 if s["success"] else 0.0)
+        entry["avg_latency_ms_ema"] = _ema(entry.get("avg_latency_ms_ema"), s["latency_ms"])
+        if s["success"]:
+            entry["last_success"]       = now
+            entry["avg_articles_ema"]   = _ema(entry.get("avg_articles_ema"), s["article_count"])
+        else:
+            entry["last_failure"] = now
+        metrics[name] = entry
+
+    save_json(METRICS_FILE, metrics)
+
+
 # ── main ────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -173,11 +238,17 @@ def main() -> None:
     articles: list[dict] = []
     success_count = 0
     fail_count = 0
+    samples: list[dict] = []
 
     valid_sources = [s for s in sources if s.get("rss")]
     for s in sources:
         if not s.get("rss"):
             log.warning("Skipping %s — no RSS URL", s.get("name", "unknown"))
+
+    def _timed_fetch(client_, name_, url_):
+        t0 = time.monotonic()
+        xml = fetch_feed(client_, name_, url_)
+        return xml, (time.monotonic() - t0) * 1000.0
 
     with httpx.Client(
         timeout=REQUEST_TIMEOUT,
@@ -186,21 +257,25 @@ def main() -> None:
     ) as client:
         with ThreadPoolExecutor(max_workers=min(10, len(valid_sources) or 1)) as pool:
             futures = {
-                pool.submit(fetch_feed, client, s["name"], s["rss"]): s
+                pool.submit(_timed_fetch, client, s["name"], s["rss"]): s
                 for s in valid_sources
             }
             for fut in as_completed(futures):
                 src = futures[fut]
                 name = src.get("name", "unknown")
-                xml = fut.result()
+                xml, latency_ms = fut.result()
                 if xml is None:
                     fail_count += 1
+                    samples.append({"name": name, "success": False,
+                                    "latency_ms": latency_ms, "article_count": 0})
                     continue
 
                 feed = feedparser.parse(xml)
                 if feed.bozo and not feed.entries:
                     log.warning("Bozo feed for %s: %s", name, feed.bozo_exception)
                     fail_count += 1
+                    samples.append({"name": name, "success": False,
+                                    "latency_ms": latency_ms, "article_count": 0})
                     continue
                 if feed.bozo:
                     log.info("%s: feedparser warning (bozo) but entries exist — using them", name)
@@ -217,8 +292,12 @@ def main() -> None:
                     kept += 1
 
                 success_count += 1
-                log.info("  → %s: %d entries (%d kept)", name, len(feed.entries), kept)
+                samples.append({"name": name, "success": True,
+                                "latency_ms": latency_ms, "article_count": kept})
+                log.info("  → %s: %d entries (%d kept, %.0f ms)",
+                         name, len(feed.entries), kept, latency_ms)
 
+    update_source_metrics(samples)
     log.info("Fetched %d articles from %d sources (%d failed)",
              len(articles), success_count, fail_count)
 
@@ -232,9 +311,12 @@ def main() -> None:
         len(articles), before_date_filter - len(articles), no_date, outside_window,
     )
 
-    # Deduplicate
+    # Deduplicate (within-run)
     articles = deduplicate(articles)
     log.info("After dedup: %d unique articles", len(articles))
+
+    # Cross-run dedup — skip URLs delivered in a recent digest
+    articles = filter_cross_run(articles)
 
     # Build output
     output = {

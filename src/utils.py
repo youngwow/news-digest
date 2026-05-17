@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timedelta, timezone
+from typing import Iterable
 
 import yaml
 
@@ -19,6 +21,7 @@ _REQUIRED_SCHEMA: dict[str, dict[str, type | tuple[type, ...]]] = {
         "base_url": str, "model": str, "temperature": (int, float),
         "max_tokens": int, "timeout": (int, float),
         "max_retries": int, "classify_concurrency": int,
+        "cache_retention_days": int,
     },
     "scraper": {
         "date_window_hours": (int, float), "request_timeout": (int, float),
@@ -33,6 +36,12 @@ _REQUIRED_SCHEMA: dict[str, dict[str, type | tuple[type, ...]]] = {
     "dedup": {
         "overlap_threshold": (int, float), "shared_words_min": int,
         "containment_min_len": int,
+        "cross_run_enabled": bool, "cross_run_retention_days": int,
+    },
+    "archive": {"retention_days": int},
+    "heuristics": {
+        "multi_source_max_boost": int, "recency_window_hours": (int, float),
+        "recency_boost": int, "source_weight_max_boost": int,
     },
     "categories": {"order": list, "emoji": dict, "labels": dict},
 }
@@ -146,3 +155,46 @@ def load_json(path: str) -> dict:
 def save_json(path: str, data: dict | list) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ── cross-run URL dedup ─────────────────────────────────────────
+
+SEEN_URLS_PATH = os.path.join(DATA_DIR, "seen_urls.json")
+
+
+def load_seen_urls() -> dict[str, str]:
+    """Return {url: ISO timestamp} for previously-delivered URLs, or {} if absent."""
+    if not os.path.exists(SEEN_URLS_PATH):
+        return {}
+    try:
+        with open(SEEN_URLS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _prune_seen_urls(urls: dict[str, str], retention_days: int) -> dict[str, str]:
+    """Drop entries older than retention_days."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    kept: dict[str, str] = {}
+    for url, ts in urls.items():
+        try:
+            seen_at = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if seen_at >= cutoff:
+            kept[url] = ts
+    return kept
+
+
+def mark_urls_seen(new_urls: Iterable[str], retention_days: int) -> None:
+    """Record `new_urls` as delivered now; prune entries older than retention_days."""
+    existing = load_seen_urls()
+    now = datetime.now(timezone.utc).isoformat()
+    for url in new_urls:
+        if url and url not in existing:
+            existing[url] = now
+    pruned = _prune_seen_urls(existing, retention_days)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    save_json(SEEN_URLS_PATH, pruned)
