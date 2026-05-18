@@ -12,6 +12,8 @@ def _good_config() -> dict:
             "active": "cloud",
             "classify_concurrency": 4,
             "cache_retention_days": 7,
+            "failure_tolerance": 0.34,
+            "bad_json_retry": True,
             "providers": [
                 {
                     "name": "cloud", "base_url": "https://x", "model": "m",

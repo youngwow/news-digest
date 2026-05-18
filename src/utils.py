@@ -20,6 +20,7 @@ _REQUIRED_SCHEMA: dict[str, dict[str, type | tuple[type, ...]]] = {
     "llm": {
         "active": str, "providers": list,
         "classify_concurrency": int, "cache_retention_days": int,
+        "failure_tolerance": (int, float), "bad_json_retry": bool,
     },
     "scraper": {
         "date_window_hours": (int, float), "request_timeout": (int, float),

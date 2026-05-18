@@ -1,4 +1,4 @@
-.PHONY: install test lint format run health show show-list history alerts unlock clean
+.PHONY: install test lint format run health show show-list history alerts unlock tune tune-apply clean
 
 install:
 	pip install -r requirements.txt
@@ -27,6 +27,12 @@ show-list:
 
 history:
 	@python3 src/show_history.py
+
+tune:
+	@python3 src/auto_reweight.py
+
+tune-apply:
+	@python3 src/auto_reweight.py --apply
 
 alerts:
 	@bash pipeline_check.sh; echo "---"; \

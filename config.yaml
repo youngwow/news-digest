@@ -1,13 +1,15 @@
 # news-digest pipeline configuration
 
 llm:
-  active: local                 # name from `providers` below; flip to switch backends
+  active: cloud                 # name from `providers` below; flip to switch backends
   classify_concurrency: 4       # parallel chunk classification workers (any provider)
   cache_retention_days: 7       # prune data/chunk_cache/ entries older than this
+  failure_tolerance: 0.34       # ok if <= this ratio of chunks fail (0.0 = strict, 1.0 = ignore)
+  bad_json_retry: true          # on unparseable LLM output, retry chunk with stricter prompt
   providers:
     - name: cloud
       base_url: "https://ollama.com/v1"
-      model: "gemma4:31b"
+      model: "deepseek-v4-flash:cloud"
       api_key_env: "OLLAMA_API_KEY"   # null/missing → no Authorization header sent
       temperature: 0.3
       max_tokens: 16384

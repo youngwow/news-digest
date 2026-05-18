@@ -31,6 +31,15 @@ PROMPTS_DIR = os.path.join(PROJECT_ROOT, "prompts")
 _llm = CONFIG["llm"]
 CLASSIFY_CONCURRENCY  = _llm["classify_concurrency"]
 CACHE_RETENTION_DAYS  = _llm["cache_retention_days"]
+FAILURE_TOLERANCE     = float(_llm["failure_tolerance"])
+BAD_JSON_RETRY        = bool(_llm["bad_json_retry"])
+
+STRICTER_PROMPT_PREFIX = (
+    "CRITICAL: respond with ONLY valid JSON.\n"
+    "No markdown fences. No comments. No trailing commas. "
+    "No unescaped quotes inside strings.\n"
+    "Begin your response with { and end with }.\n\n"
+)
 
 
 def _resolve_active_provider() -> dict:
@@ -132,6 +141,45 @@ def _prune_cache() -> None:
         log.info("chunk_cache: pruned %d expired entries", removed)
 
 
+def _classify_once(chunk_num: int, headers: dict, prompt_text: str) -> dict | None:
+    """One API attempt: HTTP retry loop + JSON parse with repair. Returns parsed dict or None."""
+    resp: httpx.Response | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            with httpx.Client(timeout=TIMEOUT) as client:
+                resp = client.post(
+                    f"{BASE_URL}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": MODEL,
+                        "messages": [{"role": "user", "content": prompt_text}],
+                        "temperature": TEMPERATURE,
+                        "max_tokens": MAX_TOKENS,
+                    },
+                )
+            if resp.status_code == 200:
+                break
+            log.warning("chunk_%d attempt %d/%d: HTTP %d: %s",
+                        chunk_num, attempt, MAX_RETRIES, resp.status_code, resp.text[:200])
+        except httpx.RequestError as e:
+            log.warning("chunk_%d attempt %d/%d: request error: %s",
+                        chunk_num, attempt, MAX_RETRIES, e)
+            resp = None
+        if attempt < MAX_RETRIES:
+            time.sleep(2 ** attempt)
+    else:
+        log.error("chunk_%d: all %d retries exhausted", chunk_num, MAX_RETRIES)
+        return None
+
+    if resp is None or resp.status_code != 200:
+        return None
+
+    result = resp.json()
+    content = result["choices"][0]["message"]["content"]
+    json_str = extract_json(content)
+    return _parse_with_repair(json_str, content, chunk_num)
+
+
 def classify_chunk(chunk_num: int) -> bool:
     chunk_path = os.path.join(CHUNKS_DIR, f"chunk_{chunk_num}.json")
     out_path = os.path.join(CHUNKS_DIR, f"chunk_{chunk_num}_classified.json")
@@ -163,47 +211,20 @@ def classify_chunk(chunk_num: int) -> bool:
         headers["Authorization"] = f"Bearer {api_key}"
 
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
-    prompt = PROMPT_TEMPLATE.format(n_articles=len(articles), articles_json=articles_json)
+    default_prompt = PROMPT_TEMPLATE.format(n_articles=len(articles), articles_json=articles_json)
 
     log.info("chunk_%d: sending %d articles to %s (%d chars)",
-             chunk_num, len(articles), MODEL, len(prompt))
+             chunk_num, len(articles), MODEL, len(default_prompt))
 
-    resp: httpx.Response | None = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            with httpx.Client(timeout=TIMEOUT) as client:
-                resp = client.post(
-                    f"{BASE_URL}/chat/completions",
-                    headers=headers,
-                    json={
-                        "model": MODEL,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": TEMPERATURE,
-                        "max_tokens": MAX_TOKENS,
-                    },
-                )
-            if resp.status_code == 200:
-                break
-            log.warning("chunk_%d attempt %d/%d: HTTP %d: %s",
-                        chunk_num, attempt, MAX_RETRIES, resp.status_code, resp.text[:200])
-        except httpx.RequestError as e:
-            log.warning("chunk_%d attempt %d/%d: request error: %s",
-                        chunk_num, attempt, MAX_RETRIES, e)
-            resp = None
-        if attempt < MAX_RETRIES:
-            time.sleep(2 ** attempt)
-    else:
-        log.error("chunk_%d: all %d retries exhausted", chunk_num, MAX_RETRIES)
-        return False
+    # First attempt with the default prompt.
+    parsed = _classify_once(chunk_num, headers, default_prompt)
 
-    if resp is None or resp.status_code != 200:
-        return False
+    # Second attempt with a stricter prompt prefix if the first produced unparseable output.
+    if parsed is None and BAD_JSON_RETRY:
+        log.warning("chunk_%d: re-attempting with stricter JSON prompt", chunk_num)
+        stricter = STRICTER_PROMPT_PREFIX + default_prompt
+        parsed = _classify_once(chunk_num, headers, stricter)
 
-    result = resp.json()
-    content = result["choices"][0]["message"]["content"]
-    json_str = extract_json(content)
-
-    parsed = _parse_with_repair(json_str, content, chunk_num)
     if parsed is None:
         return False
 
@@ -256,12 +277,24 @@ def classify_all() -> bool:
 
     log.info("chunk_cache: %d hits, %d misses", _cache_stats["hits"], _cache_stats["misses"])
 
-    if failures:
-        log.error("classify: %d/%d chunks failed: %s",
-                  len(failures), len(chunk_nums), sorted(failures))
-        return False
-    log.info("classify: all %d chunks succeeded", len(chunk_nums))
-    return True
+    if not failures:
+        log.info("classify: all %d chunks succeeded", len(chunk_nums))
+        return True
+
+    failure_ratio = len(failures) / len(chunk_nums)
+    if failure_ratio <= FAILURE_TOLERANCE and len(failures) < len(chunk_nums):
+        log.warning(
+            "classify: %d/%d chunks failed (%.0f%%) — within tolerance %.0f%%, proceeding "
+            "with partial results: %s",
+            len(failures), len(chunk_nums), failure_ratio * 100,
+            FAILURE_TOLERANCE * 100, sorted(failures),
+        )
+        return True
+
+    log.error("classify: %d/%d chunks failed (%.0f%%) — exceeded tolerance %.0f%%: %s",
+              len(failures), len(chunk_nums), failure_ratio * 100,
+              FAILURE_TOLERANCE * 100, sorted(failures))
+    return False
 
 
 def main() -> int:

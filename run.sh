@@ -158,20 +158,33 @@ PYEOF
 mkdir -p "$SCRIPT_DIR/data"
 echo "=== ${PIPELINE_START} — starting AI pipeline ===" >&2
 
-# Step 1: Scrape RSS/Atom feeds
-run_step "scrape" \
-    "Scrape RSS/Atom feeds → raw_news.json" \
-    python3 "$SCRIPT_DIR/src/scraper.py"
+# --resume: skip scrape/extract/split if a previous run preserved data/chunks/
+RESUME=false
+if [ "${1:-}" = "--resume" ]; then
+    if compgen -G "$SCRIPT_DIR/data/chunks/chunk_*.json" > /dev/null; then
+        RESUME=true
+        echo "Resume mode: skipping scrape/extract/split (existing data/chunks/ preserved)" >&2
+    else
+        echo "Resume mode requested but no data/chunks/ found — falling back to full run" >&2
+    fi
+fi
 
-# Step 2: Extract flat article list
-run_step "extract" \
-    "Extract flat article list → articles.json" \
-    python3 "$SCRIPT_DIR/src/analyze_full.py" --phase extract
+if ! $RESUME; then
+    # Step 1: Scrape RSS/Atom feeds
+    run_step "scrape" \
+        "Scrape RSS/Atom feeds → raw_news.json" \
+        python3 "$SCRIPT_DIR/src/scraper.py"
 
-# Step 3: Split into chunks (15 articles each)
-run_step "split" \
-    "Split articles into chunks (15 per chunk) for AI classification" \
-    python3 "$SCRIPT_DIR/src/analyze_full.py" --phase split
+    # Step 2: Extract flat article list
+    run_step "extract" \
+        "Extract flat article list → articles.json" \
+        python3 "$SCRIPT_DIR/src/analyze_full.py" --phase extract
+
+    # Step 3: Split into chunks (15 articles each)
+    run_step "split" \
+        "Split articles into chunks (15 per chunk) for AI classification" \
+        python3 "$SCRIPT_DIR/src/analyze_full.py" --phase split
+fi
 
 # Step 4: Classify all chunks in parallel via ollama-cloud API
 run_step "classify" \
@@ -206,10 +219,14 @@ else
 fi
 STEP_RESULTS+=("format|${FORMAT_EXIT}|Format Telegram output → stdout|${FORMAT_START}|${FORMAT_END}")
 
-# Step 8: Cleanup temporary chunk files
-run_step "cleanup" \
-    "Remove temporary chunk files from chunks/" \
-    python3 "$SCRIPT_DIR/src/analyze_full.py" --phase cleanup
+# Step 8: Cleanup temporary chunk files (only on a fully-clean run; otherwise preserve for --resume)
+if [ ${#STEP_FAILED_NAMES[@]} -eq 0 ]; then
+    run_step "cleanup" \
+        "Remove temporary chunk files from chunks/" \
+        python3 "$SCRIPT_DIR/src/analyze_full.py" --phase cleanup
+else
+    echo "=== [cleanup] skipped — pipeline had failures; data/chunks/ preserved for --resume ===" >&2
+fi
 
 # ── finalize ──
 PIPELINE_END=$(date '+%Y-%m-%d %H:%M:%S MSK')
