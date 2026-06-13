@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "news-digest"
-version = "0.2.0"
+version = "0.3.0"
 description = "Russian-language news digest pipeline (RSS → LLM classify → Telegram)."
 requires-python = ">=3.11"
 dependencies = [
@@ -10,6 +14,12 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "json-repair>=0.30.0",
 ]
+
+[project.scripts]
+news-digest = "news_digest.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["news_digest*"]
 
 [project.optional-dependencies]
 dev = [
@@ -28,7 +38,6 @@ ml-full = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

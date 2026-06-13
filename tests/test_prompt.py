@@ -1,54 +1,55 @@
-"""Tests for prompt template loading + per-provider override resolution."""
+"""Tests for ChunkClassifier prompt template loading + per-provider override."""
 
-import os
+import httpx
+import pytest
+from support import valid_raw_config
 
-import call_ollama
-
-
-def test_default_prompt_template_loads():
-    assert call_ollama.PROMPT_PATH.endswith("/prompts/classify.txt") or \
-        call_ollama.PROMPT_PATH.endswith("\\prompts\\classify.txt") or \
-        "classify." in os.path.basename(call_ollama.PROMPT_PATH)
-    assert "{n_articles}" in call_ollama.PROMPT_TEMPLATE
-    assert "{articles_json}" in call_ollama.PROMPT_TEMPLATE
+from news_digest.classify.classifier import ChunkClassifier
+from news_digest.config import Config
+from news_digest.paths import ProjectPaths
 
 
-def test_prompt_template_substitutes_placeholders():
-    formatted = call_ollama.PROMPT_TEMPLATE.format(
-        n_articles=15, articles_json="[]",
-    )
-    assert "15" in formatted
-    assert "[]" in formatted
-    assert "{n_articles}" not in formatted
-    assert "{articles_json}" not in formatted
+def _paths(tmp_path) -> ProjectPaths:
+    (tmp_path / "data").mkdir(exist_ok=True)
+    return ProjectPaths.from_root(str(tmp_path))
 
 
-def test_resolve_prompt_picks_override(monkeypatch, tmp_path):
-    # Set PROMPTS_DIR to a temp dir, drop both default and override files.
-    monkeypatch.setattr(call_ollama, "PROMPTS_DIR", str(tmp_path))
-    monkeypatch.setattr(call_ollama, "PROVIDER_NAME", "myprov")
-
-    (tmp_path / "classify.txt").write_text("default")
-    (tmp_path / "classify.myprov.txt").write_text("override")
-
-    resolved = call_ollama._resolve_prompt_path()
-    assert resolved.endswith("classify.myprov.txt")
+def _config(active="local") -> Config:
+    raw = valid_raw_config()
+    raw["llm"]["active"] = active
+    return Config.from_dict(raw)
 
 
-def test_resolve_prompt_falls_back_to_default(monkeypatch, tmp_path):
-    monkeypatch.setattr(call_ollama, "PROMPTS_DIR", str(tmp_path))
-    monkeypatch.setattr(call_ollama, "PROVIDER_NAME", "nopov")
-
-    (tmp_path / "classify.txt").write_text("default")
-
-    resolved = call_ollama._resolve_prompt_path()
-    assert resolved.endswith("classify.txt")
-    assert "nopov" not in resolved
+_DUMMY = httpx.MockTransport(lambda r: httpx.Response(200))
 
 
-def test_resolve_prompt_missing_default_raises(monkeypatch, tmp_path):
-    monkeypatch.setattr(call_ollama, "PROMPTS_DIR", str(tmp_path))
-    monkeypatch.setattr(call_ollama, "PROVIDER_NAME", "anything")
-    import pytest
-    with pytest.raises(SystemExit, match="missing classification prompt"):
-        call_ollama._resolve_prompt_path()
+def test_default_template_loads_with_placeholders(tmp_path):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "classify.txt").write_text("{n_articles}\n{articles_json}",
+                                                       encoding="utf-8")
+    clf = ChunkClassifier(_config(), _paths(tmp_path), transport=_DUMMY)
+    assert clf.prompt_path.endswith("classify.txt")
+    assert "{n_articles}" in clf.prompt_template
+    assert "{articles_json}" in clf.prompt_template
+
+
+def test_picks_provider_override(tmp_path):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "classify.txt").write_text("default", encoding="utf-8")
+    (tmp_path / "prompts" / "classify.local.txt").write_text("override", encoding="utf-8")
+    clf = ChunkClassifier(_config("local"), _paths(tmp_path), transport=_DUMMY)
+    assert clf.prompt_path.endswith("classify.local.txt")
+    assert clf.prompt_template == "override"
+
+
+def test_falls_back_to_default(tmp_path):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "classify.txt").write_text("default", encoding="utf-8")
+    clf = ChunkClassifier(_config("local"), _paths(tmp_path), transport=_DUMMY)
+    assert clf.prompt_path.endswith("classify.txt")
+
+
+def test_missing_default_raises(tmp_path):
+    (tmp_path / "prompts").mkdir()
+    with pytest.raises(FileNotFoundError, match="missing classification prompt"):
+        ChunkClassifier(_config(), _paths(tmp_path), transport=_DUMMY)

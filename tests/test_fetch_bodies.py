@@ -1,20 +1,14 @@
-"""Tests for fetch_bodies: HTML extraction, cache roundtrip, error handling."""
+"""Tests for news_digest.sources.bodies — HTML extraction + cache roundtrip."""
 
-import fetch_bodies
-from fetch_bodies import _cache_path, _read_cache, _write_cache, extract_paragraphs
+from news_digest.config import ScraperConfig
+from news_digest.sources.bodies import BodyEnricher, extract_paragraphs
 
-# ── HTML extraction ────────────────────────────────────────────────
 
 def test_extract_paragraphs_prefers_article_tag():
-    html = """
-    <html><body>
+    html = """<html><body>
         <p>Sidebar noise</p>
-        <article>
-            <p>Main first paragraph.</p>
-            <p>Main second paragraph.</p>
-        </article>
-    </body></html>
-    """
+        <article><p>Main first paragraph.</p><p>Main second paragraph.</p></article>
+    </body></html>"""
     text = extract_paragraphs(html)
     assert "Main first paragraph." in text
     assert "Main second paragraph." in text
@@ -22,29 +16,18 @@ def test_extract_paragraphs_prefers_article_tag():
 
 
 def test_extract_paragraphs_falls_back_to_main():
-    html = """
-    <html><body>
-        <main>
-            <p>Story text here.</p>
-        </main>
-    </body></html>
-    """
-    assert "Story text here." in extract_paragraphs(html)
+    assert "Story text here." in extract_paragraphs(
+        "<html><body><main><p>Story text here.</p></main></body></html>")
 
 
 def test_extract_paragraphs_falls_back_to_body():
-    html = "<html><body><p>Bare body paragraph.</p></body></html>"
-    assert extract_paragraphs(html).strip() == "Bare body paragraph."
+    assert extract_paragraphs("<html><body><p>Bare body paragraph.</p></body></html>").strip() \
+        == "Bare body paragraph."
 
 
 def test_extract_paragraphs_skips_script_and_style():
-    html = """
-    <html><body>
-        <script>var x = "noise";</script>
-        <style>.foo { color: red }</style>
-        <p>Real content.</p>
-    </body></html>
-    """
+    html = """<html><body><script>var x = "noise";</script>
+        <style>.foo { color: red }</style><p>Real content.</p></body></html>"""
     text = extract_paragraphs(html)
     assert "Real content." in text
     assert "noise" not in text
@@ -52,8 +35,7 @@ def test_extract_paragraphs_skips_script_and_style():
 
 
 def test_extract_paragraphs_handles_html_entities():
-    html = "<body><p>Russia &amp; Ukraine</p></body>"
-    assert "Russia & Ukraine" in extract_paragraphs(html)
+    assert "Russia & Ukraine" in extract_paragraphs("<body><p>Russia &amp; Ukraine</p></body>")
 
 
 def test_extract_paragraphs_empty_when_no_p_tags():
@@ -61,25 +43,28 @@ def test_extract_paragraphs_empty_when_no_p_tags():
 
 
 def test_extract_paragraphs_handles_malformed_html():
-    # Should not raise; may return empty
-    result = extract_paragraphs("<html><body><p>unterminated")
-    assert isinstance(result, str)
+    assert isinstance(extract_paragraphs("<html><body><p>unterminated"), str)
 
 
-# ── cache roundtrip ────────────────────────────────────────────────
+def _enricher(tmp_path) -> BodyEnricher:
+    cfg = ScraperConfig(date_window_hours=8, request_timeout=20, max_redirects=5,
+                        user_agent="x", fetch_bodies=True, body_max_chars=3000,
+                        body_timeout=10, body_concurrency=8, body_cache_retention_days=14)
+    return BodyEnricher(cfg, str(tmp_path))
 
-def test_cache_roundtrip(monkeypatch, tmp_path):
-    monkeypatch.setattr(fetch_bodies, "CACHE_DIR", str(tmp_path))
+
+def test_cache_roundtrip(tmp_path):
+    e = _enricher(tmp_path)
     url = "https://example.com/article-1"
-    assert _read_cache(url) is None
-    _write_cache(url, "cached content here")
-    assert _read_cache(url) == "cached content here"
+    assert e._read_cache(url) is None
+    e._write_cache(url, "cached content here")
+    assert e._read_cache(url) == "cached content here"
 
 
-def test_cache_path_is_content_addressed(monkeypatch, tmp_path):
-    monkeypatch.setattr(fetch_bodies, "CACHE_DIR", str(tmp_path))
-    p1 = _cache_path("https://a.example/x")
-    p2 = _cache_path("https://a.example/x")
-    p3 = _cache_path("https://b.example/x")
+def test_cache_path_is_content_addressed(tmp_path):
+    e = _enricher(tmp_path)
+    p1 = e._cache_path("https://a.example/x")
+    p2 = e._cache_path("https://a.example/x")
+    p3 = e._cache_path("https://b.example/x")
     assert p1 == p2 and p1 != p3
     assert p1.endswith(".txt")

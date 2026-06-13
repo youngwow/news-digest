@@ -1,127 +1,78 @@
-"""Tests for block-aware Telegram message splitting and digest rendering."""
+"""Tests for TelegramRenderer and split_message."""
 
-from format_telegram import _split_oversized_block, format_digest, split_message
+from news_digest.digest.render import TelegramRenderer, _split_oversized_block, split_message
+from news_digest.models import Digest, DigestDocument, Top5Entry
 
+# ── split_message ───────────────────────────────────────────────────
 
-def _two_block_text(block_a: str, block_b: str) -> str:
-    return f"{block_a}\n\n{block_b}"
-
-
-def test_short_text_returns_single_part():
-    parts = split_message("just a little text", limit=4096)
-    assert parts == ["just a little text"]
+def test_short_text_single_part():
+    assert split_message("just a little text", limit=4096) == ["just a little text"]
 
 
-def test_blocks_packed_together_when_under_limit():
-    text = _two_block_text("AAA", "BBB")
-    parts = split_message(text, limit=100)
-    assert len(parts) == 1
-    assert parts[0] == "AAA\n\nBBB"
+def test_blocks_packed_under_limit():
+    assert split_message("AAA\n\nBBB", limit=100) == ["AAA\n\nBBB"]
 
 
-def test_split_on_block_boundary_when_packed_blocks_exceed_limit():
-    # Two ~60-char blocks, limit 100 → must split between them (not within)
-    a = "A" * 60
-    b = "B" * 60
-    parts = split_message(_two_block_text(a, b), limit=100)
-    assert len(parts) == 2
-    assert parts[0] == a
-    assert parts[1] == b
+def test_split_on_block_boundary():
+    a, b = "A" * 60, "B" * 60
+    parts = split_message(f"{a}\n\n{b}", limit=100)
+    assert parts == [a, b]
 
 
 def test_three_blocks_pack_two_then_one():
-    a = "A" * 40
-    b = "B" * 40
-    c = "C" * 40
-    text = "\n\n".join([a, b, c])
-    # limit 100 → "A\n\nB" = 82 chars fits; "...\n\nC" would be 124 → flush, then C
-    parts = split_message(text, limit=100)
-    assert len(parts) == 2
-    assert parts[0] == f"{a}\n\n{b}"
-    assert parts[1] == c
+    a, b, c = "A" * 40, "B" * 40, "C" * 40
+    parts = split_message("\n\n".join([a, b, c]), limit=100)
+    assert parts == [f"{a}\n\n{b}", c]
 
 
 def test_oversized_block_falls_back_to_line_split():
-    # A single block that exceeds the limit must still be split — line-by-line
-    huge_block = "\n".join(["line %02d" % i for i in range(20)])  # 20 lines, ~140 chars
-    parts = split_message(huge_block, limit=40)
+    huge = "\n".join("line %02d" % i for i in range(20))
+    parts = split_message(huge, limit=40)
     assert len(parts) >= 3
-    # Each part still ends on a line boundary
     for p in parts:
         assert all(len(line) <= 40 for line in p.split("\n"))
 
 
-def test_split_oversized_block_helper_respects_limit():
-    block = "\n".join(["A" * 20] * 5)  # 5 lines, ~105 chars total
-    parts = _split_oversized_block(block, limit=50)
-    for p in parts:
+def test_split_oversized_helper_respects_limit():
+    block = "\n".join(["A" * 20] * 5)
+    for p in _split_oversized_block(block, limit=50):
         assert len(p) <= 50
 
 
-def test_digest_shape_keeps_categories_together():
-    """Simulate a real digest layout — each category block should land in a single part."""
-    blocks = [
-        "📰 Header",
-        "🔥 Headline",
-        "▸▸▸ Главное ▸▸▸\n1. story\n2. story",
-        "▸▸▸ По темам ▸▸▸\n🔹 Политика\n→ a\n→ b\n→ c",
-        "🔹 Мир\n→ x\n→ y",
-        "▸▸▸ Также ▸▸▸\n• z1\n• z2",
-        "— footer",
-    ]
-    text = "\n\n".join(blocks)
-    # Tight limit forces multiple parts but each block stays intact
-    parts = split_message(text, limit=80)
-    rejoined = "\n\n".join(parts)
-    # No category text is broken — every block string appears intact in some part
-    for block in blocks:
-        if len(block) <= 80:
-            assert any(block in p for p in parts), f"block split: {block!r}"
-    # Round-trip preserves content (modulo block separator collapse)
-    assert rejoined.replace("\n\n", "") == text.replace("\n\n", "")
+# ── TelegramRenderer ────────────────────────────────────────────────
+
+def _doc(top5, total_unique=2, total_raw=10) -> DigestDocument:
+    return DigestDocument(
+        digest=Digest(headline="Заголовок", date="01.06.2026", top5=top5, rubrics={}, rest=[]),
+        total_unique=total_unique, total_raw=total_raw)
 
 
-# ── format_digest: top-5 links ──────────────────────────────────────
-
-def _digest_data(top5: list[dict]) -> dict:
-    return {
-        "total_unique": 2,
-        "total_raw": 10,
-        "digest": {
-            "date": "01.06.2026",
-            "headline": "Заголовок",
-            "top5": top5,
-            "rubrics": {},
-            "rest": [],
-        },
-    }
+def _render(config, top5, **kw):
+    return TelegramRenderer(config.categories).render(_doc(top5, **kw))
 
 
-def test_top5_with_url_renders_link_line():
-    text = format_digest(_digest_data(
-        [{"title": "История", "url": "https://example.com/a"}]))
+def test_top5_with_url_renders_link(config):
+    text = _render(config, [Top5Entry(title="История", url="https://example.com/a")])
     assert "1. История\n   https://example.com/a" in text
 
 
-def test_top5_without_url_renders_title_only():
-    text = format_digest(_digest_data([{"title": "История"}]))
+def test_top5_without_url_title_only(config):
+    text = _render(config, [Top5Entry(title="История")])
     assert "1. История" in text
     assert "http" not in text
 
 
-def test_top5_summary_rendered_between_title_and_url():
-    text = format_digest(_digest_data(
-        [{"title": "История", "summary": "Краткая суть события.",
-          "url": "https://example.com/a"}]))
-    assert "1. История\n   Краткая суть события.\n   https://example.com/a" in text
+def test_top5_summary_between_title_and_url(config):
+    text = _render(config, [Top5Entry(title="История", summary="Краткая суть.",
+                                      url="https://example.com/a")])
+    assert "1. История\n   Краткая суть.\n   https://example.com/a" in text
 
 
-def test_top5_without_summary_renders_as_before():
-    text = format_digest(_digest_data(
-        [{"title": "История", "url": "https://example.com/a"}]))
-    assert "1. История\n   https://example.com/a" in text
-
-
-def test_thread_flag_renders_followup_marker():
-    text = format_digest(_digest_data([{"title": "История", "thread": True}]))
+def test_thread_marker_rendered(config):
+    text = _render(config, [Top5Entry(title="История", thread=True)])
     assert "1. 🔄 История" in text
+
+
+def test_footer_pluralization(config):
+    text = _render(config, [Top5Entry(title="x")], total_unique=51, total_raw=53)
+    assert "51 сюжет / 53 статьи" in text

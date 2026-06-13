@@ -7,40 +7,40 @@ test:
 	pytest -v
 
 lint:
-	ruff check src tests
+	ruff check news_digest tests
 
 format:
-	ruff format src tests
+	ruff format news_digest tests
 
 run:
 	./run.sh
 
 health:
-	python3 src/health_check.py --json | python3 -m json.tool
+	@python3 -m news_digest health
 
 show:
-	@python3 src/show_digest.py
+	@python3 -m news_digest show
 
 show-list:
-	@python3 src/show_digest.py --list
+	@python3 -m news_digest show --list
 
 history:
-	@python3 src/show_history.py
+	@python3 -m news_digest history
 
 weekly:
-	@python3 src/weekly_rollup.py
+	@python3 -m news_digest weekly
 
 usage:
-	@python3 src/show_usage.py
+	@python3 -m news_digest usage
 
 dataset-stats:
-	@python3 src/dataset_stats.py
+	@python3 -m news_digest dataset-stats
 
 tune:
-	@python3 src/auto_reweight.py
+	@python3 -m news_digest tune
 
 tune-apply:
-	@python3 src/auto_reweight.py --apply
+	@python3 -m news_digest tune --apply
 
 alerts:
 	@bash pipeline_check.sh; echo "---"; \
