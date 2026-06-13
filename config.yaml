@@ -37,9 +37,14 @@ scraper:
 
 pipeline:
   chunk_size: 15             # articles per classification chunk
+  training_log: true         # append LLM-labeled rows to data/training/dataset.jsonl each run
 
 telegram:
   message_limit: 4096
+  enabled: false             # true → run.sh delivers the digest via Bot API
+                             # (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env)
+  alerts: false              # true → pipeline_check.sh pushes ALERT output to the same chat
+                             # (independent of `enabled`; duplicate alerts are suppressed)
 
 health:
   min_sources_ok: 3
@@ -52,9 +57,23 @@ dedup:
   containment_min_len: 15          # min title length to trigger substring containment check
   cross_run_enabled: true          # filter URLs already delivered in a recent digest
   cross_run_retention_days: 1      # remember delivered URLs for this many days
+  semantic_enabled: true           # embedding-based dedup pass after word overlap
+                                   # (needs `pip install -e ".[ml]"`; falls back gracefully)
+  semantic_threshold: 0.70         # cosine similarity ≥ this merges two stories
+                                   # (calibrated on real digests; valid for both backends below.
+                                   #  NB: paraphrase-* models (MiniLM/mpnet) conflate same-topic with
+                                   #  same-event on news titles — keep bitext-style models here)
+  semantic_model: "sentence-transformers/LaBSE"               # primary backend (torch; auto-selects MPS/CUDA)
+  semantic_model_static: "minishlab/potion-multilingual-128M" # fallback backend (model2vec, no torch)
 
 archive:
   retention_days: 30               # prune data/digests/ snapshots older than this
+
+threads:
+  enabled: true                    # mark stories that develop a recently-delivered story (🔄)
+  lookback_days: 3                 # compare against archive snapshots from this window
+  similarity_threshold: 0.60       # cosine ≥ this links a story to an archived one
+                                   # (calibrated on real follow-ups: true threads ≥ 0.66, noise ≤ 0.53)
 
 heuristics:
   multi_source_max_boost: 2        # cap on +importance from sources covering same story

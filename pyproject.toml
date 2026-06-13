@@ -16,6 +16,15 @@ dev = [
     "pytest>=7",
     "ruff>=0.6",
 ]
+# Semantic dedup backends (config.dedup.semantic_enabled). `ml` is the
+# torch-free static-embedding backend; `ml-full` is higher quality but
+# requires a working torch install.
+ml = [
+    "model2vec>=0.3",
+]
+ml-full = [
+    "sentence-transformers>=3.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

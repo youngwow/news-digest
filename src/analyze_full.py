@@ -5,11 +5,13 @@ Reads raw_news.json / classified.json and writes articles.json, chunks/, and dig
 """
 
 import os
+import shutil
 import sys
+import time
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-from utils import CONFIG, DATA_DIR, get_logger, load_json, mark_urls_seen, save_json
+from utils import CONFIG, DATA_DIR, get_logger, load_json, mark_urls_seen, pluralize_ru, save_json
 
 log = get_logger("analyze_full")
 
@@ -38,7 +40,7 @@ def _archive_digest(full: dict) -> None:
     save_json(snapshot_path, full)
     log.info("Archived digest snapshot → %s", snapshot_path)
 
-    cutoff = (datetime.now() - timedelta(days=ARCHIVE_RETENTION_DAYS)).timestamp()
+    cutoff = time.time() - ARCHIVE_RETENTION_DAYS * 86400
     removed = 0
     for entry in os.listdir(DIGESTS_DIR):
         path = os.path.join(DIGESTS_DIR, entry)
@@ -64,7 +66,7 @@ def _record_delivered_urls(full: dict) -> None:
                  len(urls), CROSS_RUN_RETENTION_DAYS)
 
 
-def extract_flat_articles():
+def extract_flat_articles() -> list[dict]:
     """Load raw_news.json → extract flat article list for subagent consumption."""
     data = load_json(RAW_NEWS)
     articles = data.get("articles", [])
@@ -90,7 +92,7 @@ def extract_flat_articles():
     return flat
 
 
-def split_into_chunks():
+def split_into_chunks() -> list[str]:
     """Split articles.json into CHUNK_SIZE-sized chunks for parallel subagent processing."""
     os.makedirs(CHUNKS_DIR, exist_ok=True)
     data = load_json(ARTICLES_JSON)
@@ -114,37 +116,45 @@ def split_into_chunks():
 
 
 
-def cleanup_chunks():
+def cleanup_chunks() -> None:
     """Remove chunk files after successful digest generation."""
     if not os.path.isdir(CHUNKS_DIR):
         return
-    import shutil
     shutil.rmtree(CHUNKS_DIR)
     log.info("Cleaned up %s", CHUNKS_DIR)
 
 
-def validate_classified(path=CLASSIFIED_JSON):
-    """Check that classified.json has required structure."""
+def validate_classified(path: str = CLASSIFIED_JSON) -> dict:
+    """Check that classified.json has required structure.
+
+    Uses explicit checks (not asserts — those vanish under `python -O`) and
+    reports every offending story instead of stopping at the first.
+    """
     data = load_json(path)
     stories = data.get("stories", [])
-    for s in stories:
-        assert s.get("title"), "story missing title"
-        assert s.get("category") in CATEGORY_EMOJI, f"invalid category: {s.get('category')}"
-        assert isinstance(s.get("importance"), int), "importance must be int"
+    problems: list[str] = []
+    for i, s in enumerate(stories):
+        if not s.get("title"):
+            problems.append(f"story[{i}]: missing title")
+        if s.get("category") not in CATEGORY_EMOJI:
+            problems.append(f"story[{i}]: invalid category: {s.get('category')!r}")
+        if not isinstance(s.get("importance"), int):
+            problems.append(
+                f"story[{i}]: importance must be int, got {type(s.get('importance')).__name__}")
+    if problems:
+        for p in problems:
+            log.error(p)
+        raise SystemExit(f"{path}: {len(problems)} validation error(s)")
     log.info("Validated: %d stories in %s", len(stories), path)
     return data
 
 
-def assemble_digest():
-    """Read classified stories → build digest.json + digest.md (titles only, no summaries)."""
-    data = load_json(CLASSIFIED_JSON)
-    stories = data.get("stories", [])
+def build_digest(stories: list[dict], classified_at: str = "") -> dict:
+    """Pure transform: stories → digest dict (headline / top5 / rubrics / rest).
 
-    if not stories:
-        log.error("no stories to assemble")
-        sys.exit(1)
-
-    # Sort by importance desc
+    Sorts `stories` in place by importance (desc, longer title breaks ties).
+    Requires a non-empty list. Shared by the assemble phase and weekly_rollup.py.
+    """
     stories.sort(key=lambda s: (s.get("importance", 5), len(s.get("title", ""))), reverse=True)
 
     headline = stories[0]["title"]
@@ -161,12 +171,16 @@ def assemble_digest():
         # Exclude stories already shown in the top-5 section
         items = [s for s in by_cat.get(cat, []) if s["title"].strip().lower() not in top5_titles][:5]
         if items:
-            rubrics[cat] = [{"title": s["title"]} for s in items]
+            entries = []
+            for s in items:
+                e = {"title": s["title"]}
+                if s.get("follow_up_of"):
+                    e["thread"] = True
+                entries.append(e)
+            rubrics[cat] = entries
 
     # Rest — exclude titles already in top5 and rubrics
-    used_titles = set()
-    for s in top5:
-        used_titles.add(s["title"].strip().lower())
+    used_titles = {s["title"].strip().lower() for s in top5}
     for items in rubrics.values():
         for item in items:
             used_titles.add(item["title"].strip().lower())
@@ -178,21 +192,102 @@ def assemble_digest():
             rest_titles.append(t)
             used_titles.add(t.lower())
 
-    # Date — derived from pipeline run time (classified stories have no published field)
-    classified_at = data.get("classified_at", "")
+    # Date — derived from pipeline run time (classified stories have no published
+    # field), rendered in local time so a post-midnight run stamps the right day
     try:
         dt = datetime.fromisoformat(classified_at.replace("Z", "+00:00"))
-        date_str = dt.strftime("%d.%m.%Y")
+        date_str = dt.astimezone().strftime("%d.%m.%Y")
     except (ValueError, TypeError, AttributeError):
-        date_str = datetime.now(timezone.utc).strftime("%d.%m.%Y")
+        date_str = datetime.now().astimezone().strftime("%d.%m.%Y")
 
-    digest = {
+    # Top-5 carries the primary URL and the LLM's one-sentence summary
+    top5_entries = []
+    for s in top5:
+        entry = {"title": s["title"]}
+        if s.get("follow_up_of"):
+            entry["thread"] = True
+        summary = (s.get("short_summary") or "").strip()
+        if summary:
+            entry["summary"] = summary
+        urls = s.get("urls") or []
+        if urls:
+            entry["url"] = urls[0]
+        top5_entries.append(entry)
+
+    return {
         "headline": headline,
         "date": date_str,
-        "top5": [{"title": s["title"]} for s in top5],
+        "top5": top5_entries,
         "rubrics": rubrics,
         "rest": rest_titles,
     }
+
+
+def render_markdown(digest: dict, total_stories: int, input_count) -> str:
+    """Render a digest dict as the digest.md document (titles only, no summaries)."""
+    lines = [
+        f"# 📰 Дайджест новостей — {digest['date']}",
+        "",
+        "## 🔥 Заголовок дня",
+        f"**{digest['headline']}**",
+        "",
+        "---",
+        "## 🏆 Топ-5 главных новостей",
+        "",
+    ]
+    for i, item in enumerate(digest["top5"], 1):
+        mark = "🔄 " if item.get("thread") else ""
+        lines.append(f"### {i}. {mark}{item['title']}")
+        if item.get("summary"):
+            lines.append(item["summary"])
+        if item.get("url"):
+            lines.append(f"<{item['url']}>")
+        lines.append("")
+
+    lines += ["---", "", "## 📂 Рубрики", ""]
+    rubrics = digest["rubrics"]
+    for cat in CAT_ORDER:
+        if cat in rubrics:
+            emoji = CATEGORY_EMOJI.get(cat, "📌")
+            lines.append(f"### {emoji} {cat.capitalize()}")
+            lines.append("")
+            for item in rubrics[cat]:
+                mark = "🔄 " if item.get("thread") else ""
+                lines.append(f"- {mark}{item['title']}")
+            lines.append("")
+
+    lines += ["---", "", "## 📋 Остальные новости кратко", ""]
+    for t in digest["rest"][:50]:
+        lines.append(f"- {t}")
+
+    stories_word = pluralize_ru(total_stories, "сюжет", "сюжета", "сюжетов")
+    articles_word = (pluralize_ru(input_count, "статья", "статьи", "статей")
+                     if isinstance(input_count, int) else "статей")
+    lines += [
+        "",
+        "---",
+        f"*Сгенерировано AI: {datetime.now().strftime('%d.%m.%Y %H:%M')} MSK*",
+        f"*Проанализировано: {total_stories} {stories_word} / {input_count} {articles_word}*",
+    ]
+    return "\n".join(lines)
+
+
+def assemble_digest() -> dict:
+    """Read classified stories → build digest.json + digest.md (titles only, no summaries)."""
+    data = load_json(CLASSIFIED_JSON)
+    stories = data.get("stories", [])
+
+    if not stories:
+        log.error("no stories to assemble")
+        sys.exit(1)
+
+    # Mark follow-ups of recently-delivered stories. Runs before _archive_digest
+    # so a story never threads against its own snapshot. Lazy import: the module
+    # pulls in weekly_rollup, which imports back into analyze_full.
+    from story_threads import annotate_from_archive
+    annotate_from_archive(stories)
+
+    digest = build_digest(stories, data.get("classified_at", ""))
 
     full = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -209,43 +304,7 @@ def assemble_digest():
     _archive_digest(full)
     _record_delivered_urls(full)
 
-    # Markdown — titles only, no summaries
-    lines = [
-        f"# 📰 Дайджест новостей — {date_str}",
-        "",
-        "## 🔥 Заголовок дня",
-        f"**{headline}**",
-        "",
-        "---",
-        "## 🏆 Топ-5 главных новостей",
-        "",
-    ]
-    for i, s in enumerate(top5, 1):
-        lines.append(f"### {i}. {s['title']}")
-        lines.append("")
-
-    lines += ["---", "", "## 📂 Рубрики", ""]
-    for cat in CAT_ORDER:
-        if cat in rubrics:
-            emoji = CATEGORY_EMOJI.get(cat, "📌")
-            lines.append(f"### {emoji} {cat.capitalize()}")
-            lines.append("")
-            for item in rubrics[cat]:
-                lines.append(f"- {item['title']}")
-            lines.append("")
-
-    lines += ["---", "", "## 📋 Остальные новости кратко", ""]
-    for t in rest_titles[:50]:
-        lines.append(f"- {t}")
-
-    lines += [
-        "",
-        "---",
-        f"*Сгенерировано AI: {datetime.now().strftime('%d.%m.%Y %H:%M')} MSK*",
-        f"*Проанализировано: {len(stories)} сюжетов / {data.get('input_count', '?')} статей*",
-    ]
-
-    md = "\n".join(lines)
+    md = render_markdown(digest, len(stories), data.get("input_count", "?"))
     with open(DIGEST_MD, "w", encoding="utf-8") as f:
         f.write(md)
     log.info("Saved %s (%d chars)", DIGEST_MD, len(md))
@@ -256,7 +315,7 @@ def assemble_digest():
     return full
 
 
-def main():
+def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="AI-driven digest assembler")
     parser.add_argument("--phase", choices=["extract", "split", "cleanup", "validate-classified", "assemble"],

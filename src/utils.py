@@ -29,8 +29,8 @@ _REQUIRED_SCHEMA: dict[str, dict[str, type | tuple[type, ...]]] = {
         "body_timeout": (int, float), "body_concurrency": int,
         "body_cache_retention_days": int,
     },
-    "pipeline": {"chunk_size": int},
-    "telegram": {"message_limit": int},
+    "pipeline": {"chunk_size": int, "training_log": bool},
+    "telegram": {"message_limit": int, "enabled": bool, "alerts": bool},
     "health": {
         "min_sources_ok": int, "expected_sources": int,
         "default_max_age_minutes": int,
@@ -39,8 +39,14 @@ _REQUIRED_SCHEMA: dict[str, dict[str, type | tuple[type, ...]]] = {
         "overlap_threshold": (int, float), "shared_words_min": int,
         "containment_min_len": int,
         "cross_run_enabled": bool, "cross_run_retention_days": int,
+        "semantic_enabled": bool, "semantic_threshold": (int, float),
+        "semantic_model": str, "semantic_model_static": str,
     },
     "archive": {"retention_days": int},
+    "threads": {
+        "enabled": bool, "lookback_days": int,
+        "similarity_threshold": (int, float),
+    },
     "heuristics": {
         "multi_source_max_boost": int, "recency_window_hours": (int, float),
         "recency_boost": int, "source_weight_max_boost": int,
@@ -152,7 +158,7 @@ def load_env_secret(var_name: str) -> str:
     env_path = os.path.join(PROJECT_ROOT, ".env")
     if os.path.exists(env_path):
         prefix = f"{var_name}="
-        with open(env_path) as f:
+        with open(env_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith(prefix):
@@ -165,6 +171,16 @@ def load_env_secret(var_name: str) -> str:
 def load_api_key() -> str:
     """Backwards-compat wrapper: return OLLAMA_API_KEY from env or .env."""
     return load_env_secret("OLLAMA_API_KEY")
+
+
+def pluralize_ru(n: int, one: str, few: str, many: str) -> str:
+    """Russian plural form for n: 1 сюжет / 2 сюжета / 5 сюжетов."""
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return few
+    return many
 
 
 def extract_json(text: str) -> str:
@@ -193,14 +209,25 @@ def extract_json(text: str) -> str:
     return text[start:end + 1]
 
 
-def load_json(path: str) -> dict:
+def load_json(path: str) -> dict | list:
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_json(path: str, data: dict | list) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """Write JSON atomically (temp file + rename) so a crash mid-write can't
+    leave a corrupt file behind — several callers persist cross-run state here."""
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 # ── cross-run URL dedup ─────────────────────────────────────────

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
 from threading import Lock
 
 import httpx
@@ -100,7 +100,7 @@ def _write_cache(url: str, body: str) -> None:
 def _prune_cache() -> None:
     if not os.path.isdir(CACHE_DIR):
         return
-    cutoff = (datetime.now() - timedelta(days=BODY_CACHE_RETENTION_DAYS)).timestamp()
+    cutoff = time.time() - BODY_CACHE_RETENTION_DAYS * 86400
     removed = 0
     for entry in os.listdir(CACHE_DIR):
         path = os.path.join(CACHE_DIR, entry)
@@ -143,11 +143,12 @@ def fetch_body(client: httpx.Client, url: str, max_chars: int = BODY_MAX_CHARS) 
             _stats["errors"] += 1
         return None
 
-    truncated = body[:max_chars]
-    _write_cache(url, truncated)
+    # Cache the full body; truncation happens on read, so raising
+    # body_max_chars later takes effect for already-cached URLs too.
+    _write_cache(url, body)
     with _stats_lock:
         _stats["fetched"] += 1
-    return truncated
+    return body[:max_chars]
 
 
 # ── orchestration ──────────────────────────────────────────────────

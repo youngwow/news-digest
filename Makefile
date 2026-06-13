@@ -1,7 +1,6 @@
-.PHONY: install test lint format run health show show-list history alerts unlock tune tune-apply clean
+.PHONY: install test lint format run health show show-list history weekly usage dataset-stats alerts unlock tune tune-apply clean
 
 install:
-	pip install -r requirements.txt
 	pip install -e ".[dev]"
 
 test:
@@ -27,6 +26,15 @@ show-list:
 
 history:
 	@python3 src/show_history.py
+
+weekly:
+	@python3 src/weekly_rollup.py
+
+usage:
+	@python3 src/show_usage.py
+
+dataset-stats:
+	@python3 src/dataset_stats.py
 
 tune:
 	@python3 src/auto_reweight.py

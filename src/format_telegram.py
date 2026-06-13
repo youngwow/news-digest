@@ -8,7 +8,7 @@ Format: emoji separators, titles only (no summaries).
 import json
 import os
 
-from utils import CONFIG, DATA_DIR, get_logger
+from utils import CONFIG, DATA_DIR, get_logger, pluralize_ru
 
 DIGEST_JSON    = os.path.join(DATA_DIR, "digest.json")
 TELEGRAM_LIMIT = CONFIG["telegram"]["message_limit"]
@@ -95,12 +95,17 @@ def format_digest(digest_data: dict) -> str:
         lines.append(f"🔥 {headline}")
         lines.append("")
 
-    # Top-5 — titles only
+    # Top-5 — title, one-sentence summary, primary link (plain text; Telegram auto-links)
     top5 = digest.get("top5", [])
     if top5:
         lines.append("▸▸▸ Главное ▸▸▸")
         for i, item in enumerate(top5[:5], 1):
-            lines.append(f"{i}. {item.get('title', '')}")
+            mark = "🔄 " if item.get("thread") else ""
+            lines.append(f"{i}. {mark}{item.get('title', '')}")
+            if item.get("summary"):
+                lines.append(f"   {item['summary']}")
+            if item.get("url"):
+                lines.append(f"   {item['url']}")
         lines.append("")
 
     # Rubrics — titles only
@@ -111,7 +116,8 @@ def format_digest(digest_data: dict) -> str:
             label = CAT_LABEL.get(cat_name, f"📌 {cat_name}")
             lines.append(f"🔹 {label}")
             for item in items[:5]:
-                lines.append(f"→ {item.get('title', '')}")
+                mark = "🔄 " if item.get("thread") else ""
+                lines.append(f"→ {mark}{item.get('title', '')}")
             lines.append("")
 
     # Rest — titles only
@@ -123,7 +129,9 @@ def format_digest(digest_data: dict) -> str:
         lines.append("")
 
     # Footer
-    lines.append(f"— {total} сюжетов / {total_raw} статей / {date_str}")
+    stories_word = pluralize_ru(total, "сюжет", "сюжета", "сюжетов") if isinstance(total, int) else "сюжетов"
+    articles_word = pluralize_ru(total_raw, "статья", "статьи", "статей") if isinstance(total_raw, int) else "статей"
+    lines.append(f"— {total} {stories_word} / {total_raw} {articles_word} / {date_str}")
 
     return "\n".join(lines)
 

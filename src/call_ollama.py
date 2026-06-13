@@ -16,13 +16,20 @@ import os
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
 from threading import Lock
 
 import httpx
 from json_repair import repair_json
 
-from utils import CONFIG, DATA_DIR, PROJECT_ROOT, extract_json, get_logger, load_env_secret
+from utils import (
+    CONFIG,
+    DATA_DIR,
+    PROJECT_ROOT,
+    extract_json,
+    get_logger,
+    load_env_secret,
+    save_json,
+)
 
 CHUNKS_DIR = os.path.join(DATA_DIR, "chunks")
 CACHE_DIR  = os.path.join(DATA_DIR, "chunk_cache")
@@ -117,17 +124,30 @@ def _parse_with_repair(json_str: str, raw_content: str, chunk_num: int) -> dict 
 _cache_stats = {"hits": 0, "misses": 0}
 _cache_stats_lock = Lock()
 
+# Token usage aggregated across worker threads (from the API's `usage` field);
+# one record per classify run is appended to data/llm_usage.jsonl.
+USAGE_LOG_PATH = os.path.join(DATA_DIR, "llm_usage.jsonl")
+_usage_stats = {"prompt_tokens": 0, "completion_tokens": 0, "api_calls": 0}
+_usage_lock = Lock()
 
-def _chunk_hash(articles: list[dict]) -> str:
+# Changing the provider, model, temperature, or prompt template must invalidate
+# previously cached classifications — they were produced under different settings.
+_CACHE_NAMESPACE = "|".join((
+    PROVIDER_NAME, MODEL, str(TEMPERATURE),
+    hashlib.sha256(PROMPT_TEMPLATE.encode("utf-8")).hexdigest(),
+))
+
+
+def _chunk_hash(articles: list[dict], namespace: str = _CACHE_NAMESPACE) -> str:
     blob = json.dumps(articles, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()
+    return hashlib.sha256(namespace.encode("utf-8") + b"\x00" + blob).hexdigest()
 
 
 def _prune_cache() -> None:
     """Delete cached chunk classifications older than CACHE_RETENTION_DAYS."""
     if not os.path.isdir(CACHE_DIR):
         return
-    cutoff = (datetime.now() - timedelta(days=CACHE_RETENTION_DAYS)).timestamp()
+    cutoff = time.time() - CACHE_RETENTION_DAYS * 86400
     removed = 0
     for entry in os.listdir(CACHE_DIR):
         path = os.path.join(CACHE_DIR, entry)
@@ -141,12 +161,17 @@ def _prune_cache() -> None:
         log.info("chunk_cache: pruned %d expired entries", removed)
 
 
+# Besides these, only 5xx responses are worth retrying; other 4xx (401 bad key,
+# 400 bad request, …) will fail identically on every attempt.
+_RETRYABLE_STATUS = {408, 429}
+
+
 def _classify_once(chunk_num: int, headers: dict, prompt_text: str) -> dict | None:
     """One API attempt: HTTP retry loop + JSON parse with repair. Returns parsed dict or None."""
     resp: httpx.Response | None = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            with httpx.Client(timeout=TIMEOUT) as client:
+    with httpx.Client(timeout=TIMEOUT) as client:
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
                 resp = client.post(
                     f"{BASE_URL}/chat/completions",
                     headers=headers,
@@ -157,25 +182,48 @@ def _classify_once(chunk_num: int, headers: dict, prompt_text: str) -> dict | No
                         "max_tokens": MAX_TOKENS,
                     },
                 )
-            if resp.status_code == 200:
-                break
-            log.warning("chunk_%d attempt %d/%d: HTTP %d: %s",
-                        chunk_num, attempt, MAX_RETRIES, resp.status_code, resp.text[:200])
-        except httpx.RequestError as e:
-            log.warning("chunk_%d attempt %d/%d: request error: %s",
-                        chunk_num, attempt, MAX_RETRIES, e)
-            resp = None
-        if attempt < MAX_RETRIES:
-            time.sleep(2 ** attempt)
-    else:
-        log.error("chunk_%d: all %d retries exhausted", chunk_num, MAX_RETRIES)
-        return None
+                if resp.status_code == 200:
+                    break
+                if resp.status_code not in _RETRYABLE_STATUS and resp.status_code < 500:
+                    log.error("chunk_%d: HTTP %d (not retryable): %s",
+                              chunk_num, resp.status_code, resp.text[:200])
+                    return None
+                log.warning("chunk_%d attempt %d/%d: HTTP %d: %s",
+                            chunk_num, attempt, MAX_RETRIES, resp.status_code, resp.text[:200])
+            except httpx.RequestError as e:
+                log.warning("chunk_%d attempt %d/%d: request error: %s",
+                            chunk_num, attempt, MAX_RETRIES, e)
+                resp = None
+            if attempt < MAX_RETRIES:
+                time.sleep(2 ** attempt)
+        else:
+            log.error("chunk_%d: all %d retries exhausted", chunk_num, MAX_RETRIES)
+            return None
 
     if resp is None or resp.status_code != 200:
         return None
 
-    result = resp.json()
-    content = result["choices"][0]["message"]["content"]
+    try:
+        result = resp.json()
+        choice = result["choices"][0]
+        content = choice["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError) as e:
+        log.error("chunk_%d: malformed API response envelope (%s): %s",
+                  chunk_num, e, resp.text[:300])
+        return None
+
+    usage = result.get("usage") or {}
+    with _usage_lock:
+        _usage_stats["prompt_tokens"] += int(usage.get("prompt_tokens", 0) or 0)
+        _usage_stats["completion_tokens"] += int(usage.get("completion_tokens", 0) or 0)
+        _usage_stats["api_calls"] += 1
+
+    if choice.get("finish_reason") == "length":
+        log.error("chunk_%d: response truncated at max_tokens=%d — stories would be "
+                  "silently lost; increase max_tokens for provider '%s'",
+                  chunk_num, MAX_TOKENS, PROVIDER_NAME)
+        return None
+
     json_str = extract_json(content)
     return _parse_with_repair(json_str, content, chunk_num)
 
@@ -231,8 +279,7 @@ def classify_chunk(chunk_num: int) -> bool:
     stories = parsed.get("stories", [])
     output = {"chunk_size": len(articles), "stories": stories}
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+    save_json(out_path, output)
 
     # Populate the cache so a retry within retention skips this API call
     try:
@@ -244,11 +291,32 @@ def classify_chunk(chunk_num: int) -> bool:
     return True
 
 
+def _append_usage_record(chunks_total: int, path: str = USAGE_LOG_PATH) -> None:
+    """Append one JSONL usage record for this classify run (best-effort)."""
+    record = {
+        "run_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "provider": PROVIDER_NAME,
+        "model": MODEL,
+        "chunks_total": chunks_total,
+        "cache_hits": _cache_stats["hits"],
+        "api_calls": _usage_stats["api_calls"],
+        "prompt_tokens": _usage_stats["prompt_tokens"],
+        "completion_tokens": _usage_stats["completion_tokens"],
+    }
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("could not append usage record to %s: %s", path, e)
+
+
 def classify_all() -> bool:
     """Discover chunks/chunk_N.json files and classify them in parallel."""
     _prune_cache()
     _cache_stats["hits"] = 0
     _cache_stats["misses"] = 0
+    with _usage_lock:
+        _usage_stats.update(prompt_tokens=0, completion_tokens=0, api_calls=0)
 
     pattern = os.path.join(CHUNKS_DIR, "chunk_*.json")
     files = [f for f in glob.glob(pattern) if "_classified" not in os.path.basename(f)]
@@ -276,6 +344,10 @@ def classify_all() -> bool:
                 failures.append(n)
 
     log.info("chunk_cache: %d hits, %d misses", _cache_stats["hits"], _cache_stats["misses"])
+    log.info("llm usage: %d api calls, %d prompt + %d completion tokens",
+             _usage_stats["api_calls"], _usage_stats["prompt_tokens"],
+             _usage_stats["completion_tokens"])
+    _append_usage_record(len(chunk_nums))
 
     if not failures:
         log.info("classify: all %d chunks succeeded", len(chunk_nums))

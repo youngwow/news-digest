@@ -5,21 +5,22 @@ Reads sources.json, fetches feeds via httpx + feedparser,
 deduplicates by URL, and writes raw_news.json.
 """
 
+import html
 import json
 import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import feedparser
 import httpx
 
-from utils import CONFIG, DATA_DIR, get_logger, load_seen_urls, save_json
+from utils import CONFIG, DATA_DIR, PROJECT_ROOT, get_logger, load_seen_urls, save_json
 
 # ── config ──────────────────────────────────────────────────────────
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SOURCES_FILE = os.path.join(_ROOT, "sources.json")
+SOURCES_FILE = os.path.join(PROJECT_ROOT, "sources.json")
 OUTPUT_FILE  = os.path.join(DATA_DIR, "raw_news.json")
 METRICS_FILE = os.path.join(DATA_DIR, "source_metrics.json")
 
@@ -72,6 +73,27 @@ def fetch_feed(client: httpx.Client, name: str, url: str) -> str | None:
     return resp.text
 
 
+# Tracking query params stripped from article URLs. Cleaning improves URL-based
+# dedup (the same article no longer looks new when a feed varies its campaign
+# tags) and keeps digest links tidy.
+_TRACKING_PARAM_PREFIXES = ("utm_", "at_")
+_TRACKING_PARAM_NAMES = {"maca", "fbclid", "gclid", "yclid", "ref"}
+
+
+def clean_url(url: str) -> str:
+    """Strip known tracking query params; leave everything else untouched."""
+    if "?" not in url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if k not in _TRACKING_PARAM_NAMES
+            and not k.lower().startswith(_TRACKING_PARAM_PREFIXES)]
+    return urlunsplit(parts._replace(query=urlencode(kept)))
+
+
 def parse_entry(entry, source_name: str) -> dict:
     """Extract fields from a feedparser entry."""
     # Date: try published, fall back to updated
@@ -86,7 +108,7 @@ def parse_entry(entry, source_name: str) -> dict:
 
     return {
         "title":       entry.get("title", "").strip(),
-        "url":         entry.get("link", "").strip(),
+        "url":         clean_url(entry.get("link", "").strip()),
         "published":   date_str,
         "summary":     clean_summary(strip_html(summary).strip())[:500],   # first 500 chars
         "source":      source_name,
@@ -94,8 +116,8 @@ def parse_entry(entry, source_name: str) -> dict:
 
 
 def strip_html(text: str) -> str:
-    """Remove HTML tags (best-effort)."""
-    return re.sub(r"<[^>]*>", "", text).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    """Remove HTML tags and unescape entities (best-effort)."""
+    return html.unescape(re.sub(r"<[^>]*>", "", text))
 
 
 # Patterns that indicate WordPress/RSS boilerplate to strip from summaries
@@ -309,8 +331,8 @@ def main() -> None:
     articles = [a for a in articles if is_within_window(a.get("published"))]
     outside_window = before_date_filter - len(articles) - no_date
     log.info(
-        f"After date filter ({DATE_WINDOW_HOURS}h window): %d articles (dropped %d: %d had no date, %d outside window)",
-        len(articles), before_date_filter - len(articles), no_date, outside_window,
+        "After date filter (%sh window): %d articles (dropped %d: %d had no date, %d outside window)",
+        DATE_WINDOW_HOURS, len(articles), before_date_filter - len(articles), no_date, outside_window,
     )
 
     # Deduplicate (within-run)
@@ -334,8 +356,7 @@ def main() -> None:
         "articles":     articles,
     }
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=2)
+    save_json(OUTPUT_FILE, output)
     log.info("Written %s (%d articles)", OUTPUT_FILE, len(articles))
 
 

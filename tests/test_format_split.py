@@ -1,6 +1,6 @@
-"""Tests for block-aware Telegram message splitting in format_telegram."""
+"""Tests for block-aware Telegram message splitting and digest rendering."""
 
-from format_telegram import _split_oversized_block, split_message
+from format_telegram import _split_oversized_block, format_digest, split_message
 
 
 def _two_block_text(block_a: str, block_b: str) -> str:
@@ -79,3 +79,49 @@ def test_digest_shape_keeps_categories_together():
             assert any(block in p for p in parts), f"block split: {block!r}"
     # Round-trip preserves content (modulo block separator collapse)
     assert rejoined.replace("\n\n", "") == text.replace("\n\n", "")
+
+
+# ── format_digest: top-5 links ──────────────────────────────────────
+
+def _digest_data(top5: list[dict]) -> dict:
+    return {
+        "total_unique": 2,
+        "total_raw": 10,
+        "digest": {
+            "date": "01.06.2026",
+            "headline": "Заголовок",
+            "top5": top5,
+            "rubrics": {},
+            "rest": [],
+        },
+    }
+
+
+def test_top5_with_url_renders_link_line():
+    text = format_digest(_digest_data(
+        [{"title": "История", "url": "https://example.com/a"}]))
+    assert "1. История\n   https://example.com/a" in text
+
+
+def test_top5_without_url_renders_title_only():
+    text = format_digest(_digest_data([{"title": "История"}]))
+    assert "1. История" in text
+    assert "http" not in text
+
+
+def test_top5_summary_rendered_between_title_and_url():
+    text = format_digest(_digest_data(
+        [{"title": "История", "summary": "Краткая суть события.",
+          "url": "https://example.com/a"}]))
+    assert "1. История\n   Краткая суть события.\n   https://example.com/a" in text
+
+
+def test_top5_without_summary_renders_as_before():
+    text = format_digest(_digest_data(
+        [{"title": "История", "url": "https://example.com/a"}]))
+    assert "1. История\n   https://example.com/a" in text
+
+
+def test_thread_flag_renders_followup_marker():
+    text = format_digest(_digest_data([{"title": "История", "thread": True}]))
+    assert "1. 🔄 История" in text

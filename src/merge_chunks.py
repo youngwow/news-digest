@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 """
 Mechanical chunk merger with aggressive cross-chunk dedup.
-Reads chunk_N_classified.json from chunks/ → deduplicates within categories → writes classified.json.
+Reads chunk_N_classified.json from chunks/ → deduplicates across the whole story
+list (category-agnostic word-overlap on titles) → writes classified.json.
 """
+import glob
 import json
+import math
 import os
+import re
 from datetime import datetime, timedelta, timezone
+from typing import Callable, Sequence
 
-from utils import CONFIG, DATA_DIR, get_logger
+from training_log import append_training_rows
+from utils import CONFIG, DATA_DIR, PROJECT_ROOT, get_logger, save_json
 
 CHUNKS_DIR = os.path.join(DATA_DIR, "chunks")
 ARTICLES_JSON = os.path.join(DATA_DIR, "articles.json")
-SOURCES_FILE  = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             "sources.json")
+SOURCES_FILE  = os.path.join(PROJECT_ROOT, "sources.json")
 
 _dedup = CONFIG["dedup"]
 OVERLAP_THRESHOLD   = _dedup["overlap_threshold"]
 SHARED_WORDS_MIN    = _dedup["shared_words_min"]
 CONTAINMENT_MIN_LEN = _dedup["containment_min_len"]
+SEMANTIC_ENABLED      = _dedup["semantic_enabled"]
+SEMANTIC_THRESHOLD    = float(_dedup["semantic_threshold"])
+SEMANTIC_MODEL        = _dedup["semantic_model"]
+SEMANTIC_MODEL_STATIC = _dedup["semantic_model_static"]
 
 _heur = CONFIG["heuristics"]
 MULTI_SOURCE_MAX_BOOST   = _heur["multi_source_max_boost"]
@@ -28,20 +37,24 @@ SOURCE_WEIGHT_MAX_BOOST  = _heur["source_weight_max_boost"]
 log = get_logger("merge_chunks")
 
 
+# Russian stop words (plus reporting verbs) ignored when comparing titles
+_STOP_WORDS = frozenset({
+    "и","в","во","не","что","он","на","я","с","со","как","а","то","все",
+    "она","так","но","его","по","из","у","же","за","от","о","бы","для",
+    "это","или","до","мы","их","был","еще","к","когда","да","вы","при",
+    "без","под","нет","ли","там","где","уже","если","быть","себя","этот",
+    "будет","после","может","теперь","сейчас","через","пока","них","здесь",
+    "также","только","сообщил","заявил","рассказал","пишет","написал",
+    "новый","стало","известно","очень",
+})
+
+
 def title_words(title: str) -> set[str]:
     """Extract significant words from title (no regex)."""
     t = title.lower()
     for ch in ".,!?;:—«»\"'()[]{}…":
         t = t.replace(ch, " ")
-    words = t.split()
-    stop = {"и","в","во","не","что","он","на","я","с","со","как","а","то","все",
-            "она","так","но","его","по","из","у","же","за","от","о","бы","для",
-            "это","или","до","мы","их","был","еще","к","когда","да","вы","при",
-            "без","под","нет","ли","там","где","уже","если","быть","себя","этот",
-            "будет","после","может","теперь","сейчас","через","пока","них","здесь",
-            "также","только","сообщил","заявил","рассказал","пишет","написал",
-            "новый","стало","известно","очень"}
-    return {w for w in words if len(w) > 2 and w not in stop}
+    return {w for w in t.split() if len(w) > 2 and w not in _STOP_WORDS}
 
 
 def merge_stories(s1: dict, s2: dict) -> dict:
@@ -168,13 +181,108 @@ def dedup_stories(stories: list[dict]) -> list[dict]:
     return merged
 
 
+# ── semantic dedup (embedding-based second pass) ────────────────────
+#
+# Word overlap misses Russian paraphrases («атаки дронов» / «удара беспилотника»),
+# because it compares exact word forms. Sentence embeddings compare meaning.
+
+def _normalize(vec: Sequence[float]) -> list[float]:
+    norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+    return [x / norm for x in vec]
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    """Dot product of unit-norm vectors."""
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _load_encoder() -> Callable[[list[str]], Sequence[Sequence[float]]] | None:
+    """Return a texts→vectors callable from the first available backend, or None.
+
+    Backend 1: sentence-transformers (best quality, requires a working torch).
+    Backend 2: model2vec static embeddings (no torch, ~CPU-millisecond inference).
+    Any load failure degrades gracefully to word-overlap-only dedup.
+    """
+    try:
+        import torch
+        from sentence_transformers import SentenceTransformer
+        device = ("mps" if torch.backends.mps.is_available()
+                  else "cuda" if torch.cuda.is_available()
+                  else "cpu")
+        model = SentenceTransformer(SEMANTIC_MODEL, device=device)
+        log.info("semantic dedup: using sentence-transformers (%s) on %s",
+                 SEMANTIC_MODEL, device)
+        return lambda texts: model.encode(texts, normalize_embeddings=True)
+    except Exception as e:  # noqa: BLE001 — ImportError, broken torch, download failure
+        log.debug("sentence-transformers backend unavailable: %s", e)
+
+    try:
+        from model2vec import StaticModel
+        model = StaticModel.from_pretrained(SEMANTIC_MODEL_STATIC)
+        log.info("semantic dedup: using model2vec static embeddings (%s)", SEMANTIC_MODEL_STATIC)
+        return lambda texts: model.encode(texts)
+    except Exception as e:  # noqa: BLE001
+        log.warning("semantic dedup disabled — no embedding backend available (%s); "
+                    "install with: pip install -e '.[ml]'", e)
+        return None
+
+
+def dedup_semantic(
+    stories: list[dict],
+    threshold: float = SEMANTIC_THRESHOLD,
+    encode: Callable[[list[str]], Sequence[Sequence[float]]] | None = None,
+) -> list[dict]:
+    """Merge stories whose title embeddings reach cosine similarity ≥ threshold.
+
+    Same greedy grouping as dedup_stories. Returns the input unchanged when no
+    embedding backend is available.
+    """
+    if len(stories) < 2:
+        return stories
+    if encode is None:
+        encode = _load_encoder()
+        if encode is None:
+            return stories
+
+    vecs = [_normalize(list(v)) for v in encode([s.get("title", "") for s in stories])]
+    n = len(stories)
+    used = [False] * n
+    merged: list[dict] = []
+
+    for i in range(n):
+        if used[i]:
+            continue
+        story = dict(stories[i])
+        for j in range(i + 1, n):
+            if used[j]:
+                continue
+            sim = _cosine(vecs[i], vecs[j])
+            if sim >= threshold:
+                log.info("semantic merge (%.2f): %r + %r",
+                         sim, story.get("title", "")[:60], stories[j].get("title", "")[:60])
+                story = merge_stories(story, stories[j])
+                used[j] = True
+        merged.append(story)
+
+    return merged
+
+
+def _discover_chunk_indices() -> list[int]:
+    """Return sorted indices of every chunk_N.json present in CHUNKS_DIR."""
+    pattern = os.path.join(CHUNKS_DIR, "chunk_*.json")
+    indices: list[int] = []
+    for path in glob.glob(pattern):
+        name = os.path.basename(path)
+        m = re.fullmatch(r"chunk_(\d+)\.json", name)
+        if m:
+            indices.append(int(m.group(1)))
+    return sorted(indices)
+
+
 def main() -> None:
     all_stories: list[dict] = []
-    for i in range(1, 20):
+    for i in _discover_chunk_indices():
         path = os.path.join(CHUNKS_DIR, f"chunk_{i}_classified.json")
-        input_path = os.path.join(CHUNKS_DIR, f"chunk_{i}.json")
-        if not os.path.exists(input_path):
-            break
         if not os.path.exists(path):
             log.warning("chunk_%d: SKIPPED (classified output missing — API failure)", i)
             continue
@@ -190,6 +298,16 @@ def main() -> None:
     deduped = dedup_stories(all_stories)
     log.info("After dedup: %d stories (removed %d duplicates)", len(deduped), raw_count - len(deduped))
 
+    if SEMANTIC_ENABLED:
+        before = len(deduped)
+        deduped = dedup_semantic(deduped)
+        log.info("After semantic dedup: %d stories (removed %d paraphrase duplicates)",
+                 len(deduped), before - len(deduped))
+
+    # Distillation rows for a future local classifier — logged before the
+    # heuristic boosts so importance is the raw LLM label
+    append_training_rows(deduped)
+
     # Heuristic importance boosts — multi-source, recency, source-weight
     url_published = load_url_published_map()
     source_weights = load_source_weights()
@@ -203,12 +321,11 @@ def main() -> None:
     log.info("Heuristics: boosted importance on %d/%d stories", boosted, len(deduped))
 
     out_path = os.path.join(DATA_DIR, "classified.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "classified_at": datetime.now(timezone.utc).isoformat(),
-            "input_count": raw_count,
-            "stories": deduped,
-        }, f, ensure_ascii=False, indent=2)
+    save_json(out_path, {
+        "classified_at": datetime.now(timezone.utc).isoformat(),
+        "input_count": raw_count,
+        "stories": deduped,
+    })
 
     log.info("Wrote %d stories → %s", len(deduped), out_path)
 

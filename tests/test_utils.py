@@ -1,10 +1,12 @@
-"""Tests for utils.py: extract_json, load_api_key, _validate_config."""
+"""Tests for utils.py: extract_json, load_api_key, save_json, _validate_config."""
 
+import json
+import os
 
 import pytest
 
 import utils
-from utils import _validate_config, extract_json, load_api_key
+from utils import _validate_config, extract_json, load_api_key, pluralize_ru, save_json
 
 # ── extract_json ────────────────────────────────────────────────
 
@@ -80,6 +82,57 @@ def test_load_api_key_returns_empty_when_nothing_set(monkeypatch, tmp_path):
     assert load_api_key() == ""
 
 
+# ── pluralize_ru ────────────────────────────────────────────────
+
+def test_pluralize_ru_forms():
+    forms = ("сюжет", "сюжета", "сюжетов")
+    assert pluralize_ru(1, *forms) == "сюжет"
+    assert pluralize_ru(2, *forms) == "сюжета"
+    assert pluralize_ru(4, *forms) == "сюжета"
+    assert pluralize_ru(5, *forms) == "сюжетов"
+    assert pluralize_ru(11, *forms) == "сюжетов"   # 11–14 are always 'many'
+    assert pluralize_ru(12, *forms) == "сюжетов"
+    assert pluralize_ru(21, *forms) == "сюжет"
+    assert pluralize_ru(22, *forms) == "сюжета"
+    assert pluralize_ru(51, *forms) == "сюжет"
+    assert pluralize_ru(100, *forms) == "сюжетов"
+    assert pluralize_ru(111, *forms) == "сюжетов"
+
+
+# ── save_json ───────────────────────────────────────────────────
+
+def test_save_json_roundtrip(tmp_path):
+    path = str(tmp_path / "out.json")
+    save_json(path, {"a": [1, 2], "б": "юникод"})
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f) == {"a": [1, 2], "б": "юникод"}
+
+
+def test_save_json_leaves_no_tmp_file(tmp_path):
+    path = str(tmp_path / "out.json")
+    save_json(path, {"a": 1})
+    assert os.listdir(tmp_path) == ["out.json"]
+
+
+def test_save_json_overwrites_existing(tmp_path):
+    path = str(tmp_path / "out.json")
+    save_json(path, {"version": 1})
+    save_json(path, {"version": 2})
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f) == {"version": 2}
+
+
+def test_save_json_failed_write_preserves_original(tmp_path):
+    """Atomicity: if serialization blows up, the old file must stay intact."""
+    path = str(tmp_path / "out.json")
+    save_json(path, {"version": 1})
+    with pytest.raises(TypeError):
+        save_json(path, {"bad": object()})
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f) == {"version": 1}
+    assert os.listdir(tmp_path) == ["out.json"]  # no stale .tmp left behind
+
+
 # ── _validate_config ────────────────────────────────────────────
 
 def _good_config() -> dict:
@@ -107,8 +160,8 @@ def _good_config() -> dict:
             "body_timeout": 10, "body_concurrency": 8,
             "body_cache_retention_days": 14,
         },
-        "pipeline": {"chunk_size": 15},
-        "telegram": {"message_limit": 4096},
+        "pipeline": {"chunk_size": 15, "training_log": True},
+        "telegram": {"message_limit": 4096, "enabled": False, "alerts": False},
         "health": {
             "min_sources_ok": 3, "expected_sources": 10,
             "default_max_age_minutes": 360,
@@ -117,8 +170,12 @@ def _good_config() -> dict:
             "overlap_threshold": 0.3, "shared_words_min": 3,
             "containment_min_len": 15,
             "cross_run_enabled": True, "cross_run_retention_days": 3,
+            "semantic_enabled": False, "semantic_threshold": 0.7,
+            "semantic_model": "m", "semantic_model_static": "m2",
         },
         "archive": {"retention_days": 30},
+        "threads": {"enabled": False, "lookback_days": 3,
+                    "similarity_threshold": 0.6},
         "heuristics": {
             "multi_source_max_boost": 2, "recency_window_hours": 2,
             "recency_boost": 1, "source_weight_max_boost": 1,

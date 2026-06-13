@@ -35,10 +35,7 @@ fi
 # Something is wrong — emit alert.
 # Every line is prefixed with "ALERT:" so it survives cron MAILTO filtering and
 # `grep ALERT data/alerts.log` queries.
-echo "ALERT: ⚠️ Дайджест новостей — проблемы"
-echo ""
-
-python3 - "$REPORT" << 'PYEOF'
+ALERT_DETAILS=$(python3 - "$REPORT" << 'PYEOF'
 import json, sys
 
 report = json.loads(sys.argv[1])
@@ -49,7 +46,6 @@ for name, check in report["checks"].items():
         "classified": "Классификация LLM",
         "digest_json": "Digest JSON",
         "digest_md": "Digest Markdown",
-        "pipeline_log": "Лог пайплайна",
         "pipeline_status": "Шаги пайплайна",
         "source_metrics": "Здоровье источников",
     }.get(name, name)
@@ -66,7 +62,18 @@ for name, check in report["checks"].items():
         print(f"ALERT:   [{tag}] {msg}")
     print("")
 PYEOF
+)
 
-echo "—"
-echo "Детали: ${HEALTH_JSON}"
+ALERT_TEXT="ALERT: ⚠️ Дайджест новостей — проблемы
+
+${ALERT_DETAILS}
+—
+Детали: ${HEALTH_JSON}"
+
+echo "$ALERT_TEXT"
+
+# Push to Telegram as well (no-op unless config telegram.alerts is true;
+# identical consecutive alerts are suppressed by the sender).
+echo "$ALERT_TEXT" | python3 "$SCRIPT_DIR/src/send_telegram.py" --alert || true
+
 exit 1

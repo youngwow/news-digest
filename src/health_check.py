@@ -18,7 +18,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from utils import CONFIG, DATA_DIR
+from utils import CONFIG, DATA_DIR, save_json
 
 _health                 = CONFIG["health"]
 MIN_SOURCES_OK          = _health["min_sources_ok"]
@@ -98,7 +98,7 @@ def check_raw_news(path: str) -> dict:
     data, err = load_json(path)
     if err:
         result["status"] = "critical"
-        result["issues"].append(f"raw_news.json: {err}")
+        result["issues"].append(("critical", f"raw_news.json: {err}"))
         return result
 
     art = data.get("articles", [])
@@ -142,7 +142,7 @@ def check_classified(path: str, max_age: int) -> dict:
     data, err = load_json(path)
     if err:
         result["status"] = "critical"
-        result["issues"].append(f"classified.json: {err}")
+        result["issues"].append(("critical", f"classified.json: {err}"))
         return result
 
     stories = data.get("stories", [])
@@ -189,7 +189,7 @@ def check_digest_json(path: str) -> dict:
     data, err = load_json(path)
     if err:
         result["status"] = "critical"
-        result["issues"].append(f"digest.json: {err}")
+        result["issues"].append(("critical", f"digest.json: {err}"))
         return result
 
     digest = data.get("digest", {})
@@ -220,14 +220,14 @@ def check_digest_md(path: str) -> dict:
 
     if not os.path.exists(path):
         result["status"] = "critical"
-        result["issues"].append("digest.md: file not found")
+        result["issues"].append(("critical", "digest.md: file not found"))
         return result
 
     try:
         size = os.path.getsize(path)
     except OSError as e:
         result["status"] = "critical"
-        result["issues"].append(f"digest.md: {e}")
+        result["issues"].append(("critical", f"digest.md: {e}"))
         return result
 
     result["details"]["size_bytes"] = size
@@ -255,12 +255,12 @@ def check_pipeline_status() -> dict:
             result["details"]["note"] = "status file doesn't exist yet"
             return result
         result["status"] = "critical"
-        result["issues"].append(f"pipeline_status.json: {err}")
+        result["issues"].append(("critical", f"pipeline_status.json: {err}"))
         return result
 
     if data is None:  # defensive — shouldn't happen if no err
         result["status"] = "critical"
-        result["issues"].append("pipeline_status.json: loaded but data is null")
+        result["issues"].append(("critical", "pipeline_status.json: loaded but data is null"))
         return result
 
     overall = data.get("overall", "unknown")
@@ -279,8 +279,10 @@ def check_pipeline_status() -> dict:
     issues = []
 
     if failed_count > 0:
+        # Only "failed" steps are flagged; "skipped" steps (downstream of a
+        # failure, exit_code -1) are already covered by the original failure.
         for step in steps:
-            if step.get("status") == "failed" or step.get("exit_code", 0) != 0:
+            if step.get("status") == "failed":
                 step_name = step.get("step", "unknown")
                 exit_code = step.get("exit_code", "?")
                 desc = step.get("description", "")
@@ -300,35 +302,6 @@ def check_pipeline_status() -> dict:
 
     result["issues"] = issues
     result["status"] = derive_status(issues)
-    return result
-
-
-def check_pipeline_log() -> dict:
-    """Check pipeline.log for recent errors."""
-    log_path = os.path.join(DATA_DIR, "pipeline.log")
-    result = {"file": log_path, "status": "healthy", "issues": [], "details": {}}
-
-    if not os.path.exists(log_path):
-        # No log yet — first run hasn't happened, not an error
-        result["details"]["note"] = "log file doesn't exist yet"
-        return result
-
-    try:
-        with open(log_path, encoding="utf-8") as f:
-            lines = f.readlines()
-    except OSError:
-        return result
-
-    result["details"]["total_lines"] = len(lines)
-
-    # Check last 50 lines for FAILED markers
-    recent = lines[-50:] if len(lines) > 50 else lines
-    failed_lines = [line for line in recent if "FAILED" in line]
-    if failed_lines:
-        result["issues"].append(("warning", f"{len(failed_lines)} FAILED markers in last 50 log lines"))
-        result["details"]["recent_failures"] = len(failed_lines)
-        result["status"] = "warning"
-
     return result
 
 
@@ -367,9 +340,6 @@ def main():
     # Stage 3b: digest.md
     checks["digest_md"] = check_digest_md(os.path.join(DATA_DIR, "digest.md"))
 
-    # Log file
-    checks["pipeline_log"] = check_pipeline_log()
-
     # Pipeline step-level status (from run.sh's pipeline_status.json)
     checks["pipeline_status"] = check_pipeline_status()
 
@@ -394,8 +364,7 @@ def main():
 
     # Save report
     report_path = os.path.join(DATA_DIR, "health.json")
-    with open(report_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
+    save_json(report_path, report)
 
     if args.json:
         print(json.dumps({"overall": overall, "checks": {k: {"status": v["status"], "issues": v["issues"]}
@@ -415,7 +384,6 @@ def main():
                 "classified": "LLM classification",
                 "digest_json": "Digest JSON",
                 "digest_md": "Digest markdown",
-                "pipeline_log": "Pipeline log",
                 "source_metrics": "Source health",
             }[name]
 
