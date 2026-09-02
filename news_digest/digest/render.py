@@ -20,8 +20,23 @@ def _articles_word(n) -> str:
     return pluralize_ru(n, "статья", "статьи", "статей") if isinstance(n, int) else "статей"
 
 
+def _escape_md(text: str) -> str:
+    """Escape Telegram legacy-Markdown control chars in literal text.
+
+    Only `_ * [ ` \\` are special (and only as entity markers), so structural
+    text (digits, dashes, dots, `/`) needs no escaping — keeping the stdout
+    rendering clean for the typical Russian title that contains none of these.
+    """
+    out: list[str] = []
+    for ch in text:
+        if ch in "_*[`\\":
+            out.append("\\")
+        out.append(ch)
+    return "".join(out)
+
+
 class TelegramRenderer:
-    """Compact, plain-text digest for Telegram (auto-links URLs)."""
+    """Compact digest for Telegram, using Markdown inline links for top-5 stories."""
 
     def __init__(self, categories: CategoriesConfig):
         self.categories = categories
@@ -34,18 +49,18 @@ class TelegramRenderer:
         lines.append("")
 
         if digest.headline:
-            lines.append(f"🔥 {digest.headline}")
+            lines.append(f"🔥 {_escape_md(digest.headline)}")
             lines.append("")
 
         if digest.top5:
             lines.append("▸▸▸ Главное ▸▸▸")
             for i, item in enumerate(digest.top5[:5], 1):
                 mark = "🔄 " if item.thread else ""
-                lines.append(f"{i}. {mark}{item.title}")
+                title = _escape_md(item.title)
+                head = f"[{title}]({item.url})" if item.url else title
+                lines.append(f"{i}. {mark}{head}")
                 if item.summary:
-                    lines.append(f"   {item.summary}")
-                if item.url:
-                    lines.append(f"   {item.url}")
+                    lines.append(f"   {_escape_md(item.summary)}")
             lines.append("")
 
         if digest.rubrics:
@@ -54,13 +69,13 @@ class TelegramRenderer:
                 lines.append(f"🔹 {self.categories.label_for(cat)}")
                 for item in items[:5]:
                     mark = "🔄 " if item.thread else ""
-                    lines.append(f"→ {mark}{item.title}")
+                    lines.append(f"→ {mark}{_escape_md(item.title)}")
                 lines.append("")
 
         if digest.rest:
             lines.append("▸▸▸ Также в новостях ▸▸▸")
             for title in digest.rest[:REST_LIMIT_TELEGRAM]:
-                lines.append(f"• {title}")
+                lines.append(f"• {_escape_md(title)}")
             lines.append("")
 
         total, total_raw = doc.total_unique, doc.total_raw
@@ -89,11 +104,10 @@ class MarkdownRenderer:
         ]
         for i, item in enumerate(digest.top5, 1):
             mark = "🔄 " if item.thread else ""
-            lines.append(f"### {i}. {mark}{item.title}")
+            heading = f"[{item.title}]({item.url})" if item.url else item.title
+            lines.append(f"### {i}. {mark}{heading}")
             if item.summary:
                 lines.append(item.summary)
-            if item.url:
-                lines.append(f"<{item.url}>")
             lines.append("")
 
         lines += ["---", "", "## 📂 Рубрики", ""]

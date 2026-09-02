@@ -49,7 +49,8 @@ class TelegramNotifier:
                      sleep=time.sleep) -> bool:
         """Send one message. Retries 429 (honoring retry_after) and 5xx."""
         url = f"{API_BASE}/bot{token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+        payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True,
+                   "parse_mode": "Markdown"}
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
                 resp = client.post(url, json=payload)

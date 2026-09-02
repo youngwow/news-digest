@@ -51,9 +51,9 @@ def _render(config, top5, **kw):
     return TelegramRenderer(config.categories).render(_doc(top5, **kw))
 
 
-def test_top5_with_url_renders_link(config):
+def test_top5_with_url_renders_markdown_link(config):
     text = _render(config, [Top5Entry(title="История", url="https://example.com/a")])
-    assert "1. История\n   https://example.com/a" in text
+    assert "1. [История](https://example.com/a)" in text
 
 
 def test_top5_without_url_title_only(config):
@@ -62,15 +62,21 @@ def test_top5_without_url_title_only(config):
     assert "http" not in text
 
 
-def test_top5_summary_between_title_and_url(config):
+def test_top5_link_then_summary(config):
     text = _render(config, [Top5Entry(title="История", summary="Краткая суть.",
                                       url="https://example.com/a")])
-    assert "1. История\n   Краткая суть.\n   https://example.com/a" in text
+    assert "1. [История](https://example.com/a)\n   Краткая суть." in text
 
 
-def test_thread_marker_rendered(config):
-    text = _render(config, [Top5Entry(title="История", thread=True)])
-    assert "1. 🔄 История" in text
+def test_thread_marker_with_link(config):
+    text = _render(config, [Top5Entry(title="История", thread=True,
+                                      url="https://example.com/a")])
+    assert "1. 🔄 [История](https://example.com/a)" in text
+
+
+def test_markdown_specials_escaped(config):
+    text = _render(config, [Top5Entry(title="Скидка *50%* на _всё_")])
+    assert r"Скидка \*50%\* на \_всё\_" in text
 
 
 def test_footer_pluralization(config):
