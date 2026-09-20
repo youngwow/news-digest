@@ -30,10 +30,8 @@ scripts/
 Makefile
 *.sh
 
-# Другие части репозитория: фронтенд собирается своим Dockerfile, дайджест в образ API не входит
+# Фронтенд собирается своим Dockerfile
 frontend/
-news_digest/
-prompts/
 docker-compose*.yaml
 *.md
 !README.md

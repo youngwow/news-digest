@@ -1,10 +1,6 @@
 .PHONY: install test test-quick lint format \
-        seed collect watch tg-login tg-status process quality serve docker-up happy-pr happy-gr \
-        digest digest-resume digest-health digest-watchdog digest-show digest-show-list digest-history \
-        digest-weekly digest-usage digest-dataset-stats digest-tune digest-tune-apply digest-alerts \
-        digest-unlock digest-clean
-
-# ── Общее ────────────────────────────────────────────────────────────────────
+        seed collect watch process serve run watchdog digest deliveries dataset quality \
+        tg-login tg-status docker-up unlock
 
 install:
 	uv sync
@@ -16,12 +12,12 @@ test-quick:
 	uv run pytest -q -m "not slow"
 
 lint:
-	uv run ruff check src news_digest tests
+	uv run ruff check src tests
 
 format:
-	uv run ruff format src news_digest tests
+	uv run ruff format src tests
 
-# ── Платформа: сбор, обработка, лента, API (src/) ────────────────────────────
+# ── сбор → обработка → лента ────────────────────────────────────────────────
 
 seed:
 	uv run python -m src sources seed
@@ -32,74 +28,40 @@ collect:
 watch:
 	uv run python -m src collect --watch
 
+process:
+	uv run python -m src process
+
+serve:
+	uv run python -m src serve
+
+# ── дайджест и эксплуатация ─────────────────────────────────────────────────
+
+run:            # cron: сбор → обработка → дайджест (Telegram при telegram.deliver, иначе stdout)
+	./run.sh
+
+watchdog:       # cron: тишина, пока всё хорошо; ALERT (+ Telegram при telegram.alerts) иначе
+	@./pipeline_check.sh
+
+digest:         # Telegram-текст дайджеста на stdout; `make digest ARGS="--send"` — в чат
+	@uv run python -m src digest --format telegram $(ARGS)
+
+deliveries:
+	@uv run python -m src deliveries
+
+dataset:
+	@uv run python -m src dataset $(ARGS)
+
+quality:
+	uv run python -m src quality --gold
+
 tg-login:
 	uv run python -m src telegram login
 
 tg-status:
 	uv run python -m src telegram status
 
-happy-pr:
-	bash scripts/happy_path_pr.sh
-
-happy-gr:
-	bash scripts/happy_path_gr.sh
-
-process:
-	uv run python -m src process
-
-quality:
-	uv run python -m src quality --gold
-
-serve:
-	uv run python -m src serve
-
 docker-up:
 	docker compose up --build
 
-# ── Telegram-дайджест: RSS → LLM-классификация → дайджест (news_digest/) ─────
-
-digest:
-	./run.sh
-
-digest-resume:
-	./run.sh --resume
-
-digest-health:
-	@uv run python -m news_digest health
-
-digest-watchdog:
-	@uv run python -m news_digest watchdog
-
-digest-show:
-	@uv run python -m news_digest show
-
-digest-show-list:
-	@uv run python -m news_digest show --list
-
-digest-history:
-	@uv run python -m news_digest history
-
-digest-weekly:
-	@uv run python -m news_digest weekly
-
-digest-usage:
-	@uv run python -m news_digest usage
-
-digest-dataset-stats:
-	@uv run python -m news_digest dataset-stats
-
-digest-tune:
-	@uv run python -m news_digest tune
-
-digest-tune-apply:
-	@uv run python -m news_digest tune --apply
-
-digest-alerts:
-	@bash pipeline_check.sh; echo "---"; \
-		tail -20 data/alerts.log 2>/dev/null || echo "(no alerts logged yet)"
-
-digest-unlock:
+unlock:
 	@rmdir data/.run.lock 2>/dev/null && echo "lock released" || echo "no lock to release"
-
-digest-clean:  # артефакты дайджеста; hub.db и сессии Telegram не трогает
-	rm -rf data/chunks data/*.json data/*.md data/*.log

@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# News digest pipeline runner — thin wrapper over the news_digest package.
-# The orchestration (locking, step gating, status/history) lives in
-# news_digest.pipeline.Pipeline; see `python3 -m news_digest run --help`.
+# Один запуск конвейера для cron: сбор → обработка → дайджест (в чат при telegram.deliver,
+# иначе на stdout). Оркестрация, lock и гейтинг шагов — в src/services/pipeline_run.py.
 #
-# Usage:  ./run.sh [--resume]
-# Output: compact Telegram-friendly digest on stdout; status on stderr.
-# Exit:   0 if every step passed (or a lock conflict no-op), 1 otherwise.
-
+# Usage:  ./run.sh [--limit N] [--no-collect] [--no-process] [--no-digest] [--no-deliver]
+# Exit:   0 — чисто (или lock: другой запуск идёт), 2 — деградация, 1 — шаг упал.
 set -uo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-exec python3 -m news_digest run "$@"
+cd "$(dirname "${BASH_SOURCE[0]}")"
+exec uv run python -m src run "$@"
