@@ -1,30 +1,94 @@
-# ai-analytics-hub
+# news-digest
 
-Кейс: «Интеллектуальный аналитический центр на базе ИИ» — автоматический сбор
-отраслевых новостей, НПА и Telegram-дайджестов с последующей саммаризацией и
-единой лентой (см. `context/task.md`).
+[![CI](https://github.com/youngwow/news-digest/actions/workflows/ci.yml/badge.svg)](https://github.com/youngwow/news-digest/actions/workflows/ci.yml)
+
+Мониторинг отраслевых новостей и нормативных актов. Платформа собирает материалы из RSS, sitemap,
+HTML-страниц, Telegram-каналов и поиска Tavily, склеивает перепечатки, прогоняет каждое событие через
+LLM — тип, сущности, саммари, приоритет относительно профиля компании — и отдаёт ленту аналитику
+через HTTP-API и веб-интерфейс. Рядом живёт Telegram-дайджест, с которого проект начался: RSS →
+LLM-классификация по рубрикам → топ-5 и рубрики → сообщение в чат по cron.
+
+![Лента: карточки высокого приоритета с тегами, флагом «нужна проверка» и предложением «вероятный дубль»](docs/img/feed.png)
+
+## Что внутри
+
+| | Платформа — `src/` + `frontend/` | Telegram-дайджест — `news_digest/` |
+|---|---|---|
+| Вход | 63 источника пяти типов: RSS, sitemap, HTML-diff, Telegram (MTProto или `t.me/s/`), запросы Tavily | RSS-записи того же `sources.json` |
+| Дедупликация | URL → SimHash-64 по 3-граммам → косинус локальных эмбеддингов (до вызова модели); после прогона — HDBSCAN по саммари как предложение «вероятный дубль» | модель внутри чанка → пересечение значимых слов → косинус LaBSE между чанками → доставленные URL прошлых прогонов |
+| Модель | один structured-output вызов на кластер (Ollama Cloud, GLM-5.3), схема ответа проверяется в коде, fail-safe по приоритету, экстрактивный baseline без модели | классификация чанками по 15 статей через OpenAI-совместимый API (облако или локальный Ollama), кэш по хэшу содержимого, ремонт JSON, допуск на долю упавших чанков |
+| Выход | SQLite, FastAPI (`/api/v1`, `/docs`), Vue 3 дашборд, RSS/CSV-выгрузка, markdown-дайджест | текст для Telegram Bot API, markdown, архив снимков с пометкой продолжений 🔄 |
+| Человек в контуре | правки аналитика версионируются и не перетираются переобработкой; скрытие, архив, заметки, объединение дублей | веса источников (`tune`), сторожевой скрипт с алертами в Telegram |
+| Тесты | 2 596 pytest + 163 Vitest | 212 pytest |
+
+## История проекта и моя роль
+
+- **Май–июнь 2026, v1.** Личный пайплайн: `news_digest/` — сбор десяти RSS, LLM-классификация по восьми
+  рубрикам, дедупликация в четыре слоя, эвристики важности, снимки и «нити» историй, health-check и
+  сторожевой cron с алертами. Коммиты с 14 мая по 13 июня, последние правки — 2 сентября.
+- **Сентябрь 2026, v2.** Командный кейс GS Labs «Интеллектуальный аналитический центр на базе ИИ»
+  (репозиторий команды — [youngwow/ai-analytics-hub](https://github.com/youngwow/ai-analytics-hub)).
+  Моя зона — сбор данных, backend и frontend: адаптеры источников (RSS, sitemap, HTML-diff, Telegram
+  через MTProto и веб-превью, поиск Tavily, ручной импорт), слой `api → services → repositories`,
+  обработка с двухступенчатой дедупликацией, HTTP-API и дашборд. Бенчмарки моделей и продуктовая часть в командном
+  репозитории — работа коллег и в этот репозиторий не входят.
+- **Этот репозиторий** — обе линии, слитые с полной историей коммитов (`git log --graph`): майская
+  ветка и сентябрьская ветка `backend` командного проекта. Дайджест сохранён как самостоятельный
+  пакет; его функции (доставка в Telegram, архив, алерты) переезжают в платформу по дорожной карте ниже.
 
 ## Быстрый старт
 
 ```bash
-uv sync                                    # зависимости в .venv (Python ≥ 3.11)
-cp .env.example .env                       # TAVILY_API — discover и search; TELEGRAM_API_* — MTProto; OLLAMA_API_KEY — обработка
-uv run python -m src sources seed          # загрузить sources.json (53 источника, 44 включены)
+uv sync                                    # зависимости в .venv (Python 3.13 из .python-version)
+cp .env.example .env                       # OLLAMA_API_KEY — обработка; TAVILY_API, TELEGRAM_API_* — по желанию
+uv run python -m src sources seed          # загрузить sources.json (63 источника, 44 включены)
 uv run python -m src collect               # один проход по всем включённым источникам
 uv run python -m src docs --limit 20       # что собрали
 uv run python -m src process --limit 20    # обработать: саммари, тип, приоритет (нужен OLLAMA_API_KEY)
 uv run python -m src items --priority high # лента: что важно прочитать первым
-uv run python -m src collect --watch --interval 900   # опрашивать каждые 15 минут
 uv run python -m src serve                 # HTTP-API на 127.0.0.1:8000, схема на /docs
-docker compose up --build                  # то же в контейнере: data/ монтируется томом
+cd frontend && npm ci && npm run dev       # дашборд на 127.0.0.1:5173, /api проксируется в API
+docker compose up --build                  # то же в контейнерах: API :8000, фронтенд :8080
 ```
 
-`make install | seed | collect | watch | tg-login | tg-status | process | quality | serve | docker-up | test | lint | happy-pr | happy-gr` — те же команды.
+Telegram-дайджест — отдельной командой из того же окружения:
 
-Адрес, порт, `/docs` и CORS — параметры окружения (`HOST`, `PORT`, `DOCS`, `CORS_ORIGINS` в `.env`,
-см. `.env.example`); корень данных переопределяется переменной `HUB_ROOT`.
+```bash
+./run.sh                                   # RSS → чанки → LLM → дедуп → дайджест на stdout (make digest)
+uv run python -m news_digest show          # последний снимок; --list, --latest 3
+```
 
-## Команды
+`make install | seed | collect | watch | process | quality | serve | docker-up | test | lint` и
+`make digest | digest-health | digest-watchdog | digest-show | digest-tune …` — те же команды.
+
+## Как устроено
+
+```
+sources.json ─► resolver ─► kind (rss | telegram | sitemap | html | search)
+                                    │
+collect ──► ThreadPool ──► adapter.fetch() ──► RawDocument[] ──► dedup ──► fulltext ──► SQLite
+             (HTTP+parse)                                     (main thread, транзакция на источник)
+
+process ──► S0 нормализация ──► S1 SimHash + косинус на numpy ──► кластер
+                                       │        (эмбеддинги — локальная модель)
+            один вызов модели на кластер (тип, сущности, саммари, приоритет, теги)
+                                       │
+            разбор и проверка ответа ──► items + entities + item_sources (транзакция на кластер)
+                                       │
+            эмбеддинги саммари свежих карточек ──► HDBSCAN ──► «вероятный дубль — объединить?»
+
+serve ──► FastAPI: /api/v1/{items, documents, sources, processing, collection, profiles, export, health}
+frontend ──► Vue 3 + TypeScript + Tailwind, dev-прокси /api → :8000
+
+news_digest run ──► scrape (RSS) ─► extract ─► split ─► classify (LLM, чанки) ─► merge (дедуп,
+                    эвристики) ─► assemble (нити 🔄, архив) ─► format ─► deliver (Telegram Bot API)
+```
+
+Слои платформы: `src/api/routes` (тонкие маршруты) → `src/services` (вся логика, одна на CLI и HTTP)
+→ `src/repositories` (SQLite, миграции по `PRAGMA user_version`) → `src/models` (dataclass'ы домена,
+pydantic только на HTTP-границе). Подробно — в разделе «Модули платформы» и в `docs/architecture.md`.
+
+## Платформа: команды
 
 | Команда | Что делает |
 |---|---|
@@ -353,11 +417,13 @@ curl -s 'localhost:8000/api/v1/items/facets?from=2026-09-01' | jq   # счётч
 
 ## Источники
 
-`sources.json` собран **только** из `context/sources_for_company.md` и проверен вручную: адреса
-лент закреплены через `kind`/`fetch_url`, чтобы `sources seed` не ходил в сеть. Всего 53 источника,
-44 включены; ещё 8 адресов лежат в `excluded` с причиной.
+`sources.json` — один пул для платформы и дайджеста, проверенный вручную: адреса лент закреплены
+через `kind`/`fetch_url`, чтобы `sources seed` не ходил в сеть. Отраслевая часть (53 источника)
+собрана по списку кейсодателя; ещё десять общественно-политических изданий первой версии дайджеста
+(Meduza, BBC Russian, DW и другие) заведены выключенными — включайте, если нужен общий, а не отраслевой
+дайджест. Всего 63 источника, 44 включены; 25 адресов лежат в `excluded` с причиной.
 
-- **СМИ (17)** — CNews и CNews Телеком, TAdviser, Коммерсантъ, Lenta.ru, Интерфакс, Телеспутник,
+- **СМИ (17 отраслевых + 10 общих, выключены)** — CNews и CNews Телеком, TAdviser, Коммерсантъ, Lenta.ru, Интерфакс, Телеспутник,
   Кабельщик (sitemap), D-Russia, Habr, КонсультантПлюс, Ведомости («Технологии»); выключены до
   проверки из РФ или как низкоприоритетные: РБК, ТАСС, RusCable, Forbes.
 - **Регуляторы (14)** — официальное опубликование НПА `publication.pravo.gov.ru` (три ленты API:
@@ -457,23 +523,7 @@ uv run python -m src sources list            # 8. состояние источ�
 uv run python -m src collect --watch --interval 3600  # дальше: сайты регуляторов — раз в час
 ```
 
-## Как устроено
-
-```
-URL источника → resolver → kind (rss | telegram | sitemap | html | search | manual)
-                                       │
-collect ──► ThreadPool ──► adapter.fetch() ──► RawDocument[] ──► dedup ──► fulltext ──► SQLite
-             (HTTP+parse)                                     (main thread, транзакция на источник)
-search  ──► collect_one(источник-запрос) ──► SearchAdapter → Tavily ──► документы + «Сводка»
-
-process ──► S0 нормализация ──► S1 SimHash + косинус на numpy ──► кластер
-                                       │        (эмбеддинги — локальная модель)
-            один вызов модели на кластер (тип, сущности, саммари, приоритет, теги)
-                                       │
-            разбор и проверка ответа ──► items + entities + item_sources (транзакция на кластер)
-                                       │
-            эмбеддинги саммари свежих карточек ──► HDBSCAN ──► «вероятный дубль — объединить?»
-```
+## Модули платформы
 
 - `src/sources/resolver.py` — цепочка из `scraper.md` §0: t.me → `tavily://` → RSS по URL →
   `<link rel=alternate>` и типовые пути → sitemap с `lastmod` → HTML-diff.
@@ -518,19 +568,116 @@ process ──► S0 нормализация ──► S1 SimHash + косин�
 - `src/config.py` — `Config` из `config.yaml` (домен) и `Settings` из окружения/`.env` (процесс:
   адрес, порт, CORS, уровень логов, `HUB_ROOT`). `src/Dockerfile` + `docker-compose.yaml` —
   контейнер с healthcheck на `/api/v1/health/ready`.
-- `config.yaml` — окно первого сбора, таймауты, лимиты, параметры Tavily (`days`, `country`, `language`)
-  и Telegram (`mtproto`, `max_posts`, `concurrency`), модель и пороги обработки (`llm`, `processing`),
-  провайдер эмбеддингов (`embeddings`) и кластеризация дублей после прогона (`clustering`).
+- `config.yaml` — один файл на оба пакета; секции платформы: окно первого сбора, таймауты, лимиты,
+  параметры Tavily (`days`, `country`, `language`) и Telegram (`mtproto`, `max_posts`, `concurrency`),
+  модель и пороги обработки (`llm`, `processing`), провайдер эмбеддингов (`embeddings`) и кластеризация
+  дублей после прогона (`clustering`). Каждый загрузчик берёт из общих секций только свои ключи.
+
+## Telegram-дайджест (`news_digest/`)
+
+Первая версия проекта и до сих пор самостоятельный инструмент: раз в несколько часов по cron
+собирает RSS, классифицирует статьи моделью и присылает в Telegram компактный дайджест —
+заголовок дня, топ-5 с короткими саммари, рубрики. Читает те же `config.yaml` и `sources.json`
+(включённые записи `kind: rss`), пишет в `data/`.
+
+```bash
+./run.sh                              # полный прогон: scrape → extract → split → classify → merge → assemble → format
+./run.sh --resume                     # переиспользовать data/chunks/ — не платить за классификацию заново
+uv run python -m news_digest deliver  # отправить в чат (config.yaml → telegram.enabled: true, токен и chat id в .env)
+uv run python -m news_digest health   # проверка артефактов прогона, код 0/1/2; --json для мониторинга
+bash pipeline_check.sh                # сторож для cron: молчит, пока всё хорошо, иначе блок ALERT (+ Telegram)
+uv run python -m news_digest history  # таблица прошлых прогонов; weekly — недельная сводка; usage — токены
+uv run python -m news_digest tune     # предложить веса источников по их надёжности; --apply записать в sources.json
+```
+
+Что в нём сделано:
+
+- **Оркестрация с защитой от дорогих ошибок.** Шаги гейтятся: упал сбор — классификация и доставка
+  не запускаются на устаревших данных и не тратят токены; статус каждого шага — в
+  `data/pipeline_status.json`, история — в `pipeline_history.jsonl`. Атомарный lock (`mkdir`)
+  делает пересекающиеся запуски no-op.
+- **Устойчивость к модели.** Повторы только на 408/429/5xx с экспоненциальной паузой; обрезанный ответ
+  (`finish_reason: length`) отклоняется, а не «чинится»; битый JSON проходит через `json_repair`,
+  затем чанк уходит повторно со строгим промптом; прогон считается успешным, если упало не больше
+  `llm.failure_tolerance` чанков, неразбираемое сохраняется в `data/failed_chunks/`. Кэш ответов по
+  хэшу содержимого чанка (с учётом модели, температуры и промпта) позволяет доделать упавший прогон
+  бесплатно.
+- **Дедупликация в четыре слоя.** Модель склеивает одно событие внутри чанка; между чанками —
+  пересечение значимых слов, затем косинус LaBSE (порог 0.70 откалиброван на реальных заголовках:
+  paraphrase-модели вроде MiniLM здесь не годятся — путают «ту же тему» с «тем же событием»); между
+  прогонами — уже доставленные URL. Без torch работает запасной бэкенд model2vec (`uv sync --extra ml`).
+- **Нити историй.** Перед архивированием заголовки сравниваются со снимками прошлых дней тем же
+  энкодером; продолжение помечается 🔄 (порог 0.60: настоящие продолжения ≥ 0.66, шум ≤ 0.53).
+- **Эвристики важности** поверх оценки модели: несколько источников об одном событии, доверие к
+  источнику (`weight` в `sources.json`, его же предлагает `tune` по EMA успешности опросов), свежесть.
+- **Набор для дистилляции.** Каждая пара «статья → рубрика и важность от модели» дописывается в
+  `data/training/dataset.jsonl` до эвристик — задел под маленький локальный классификатор
+  (`dataset-stats` показывает, сколько накопилось).
+- **Эксплуатация.** `health` проверяет свежесть и структуру артефактов и долю успешных источников;
+  `watchdog` превращает это в ALERT-блок на русском и шлёт в Telegram, подавляя повторы одинаковых
+  алертов, так что 30-минутный cron пишет только об изменениях.
+
+```cron
+0 */6 * * * /path/to/news-digest/run.sh 2>&1 | grep -E '^(ALERT|FAILED)'
+*/30 * * * * /path/to/news-digest/pipeline_check.sh
+```
+
+## Качество и метрики
+
+- **Дедупликация S1** откалибрована на размеченных парах (`tests/fixtures/gold/duplicate_pairs.jsonl`):
+  с инструкцией instruct-модели recall 1.00 / precision 1.00 при пороге 0.86, без инструкции recall
+  0.50 — таблица выше в разделе про эмбеддинги; `uv run python -m src quality --pairs` пересчитывает.
+- **Приоритет и полнота по `high`.** Код подсчёта готов (`quality --gold`, тот же отчёт по
+  `GET /api/v1/processing/quality`), но золотой набор карточек ещё не размечен — это следующий шаг
+  дорожной карты, без него чисел по классификации здесь нет.
+- **Пороги дайджеста** (0.70 семантическая дедупликация, 0.60 нити) выставлены по реальным дайджестам
+  за июнь; описание калибровки — в комментариях `config.yaml`.
+
+## Раскладка репозитория
+
+```
+src/                 платформа: sources/ (адаптеры, резолвер, MTProto), processing/ (нормализация, SimHash,
+                     эмбеддинги, LLM, HDBSCAN, качество), repositories/ (SQLite), services/, api/routes/, models/
+frontend/            Vue 3 + TypeScript + Tailwind: лента, карточка, НПА, дайджест, источники, обработка, профиль
+news_digest/         Telegram-дайджест: sources/, classify/, digest/, delivery/, monitoring/, training/, pipeline.py
+tests/               conftest.py, support.py, fixtures/ и unit/ — платформа; digest/ — дайджест (свои conftest/support)
+docs/                architecture.md, ml.md, monitoring.md, risks-and-ops.md, product-roadmap; img/ — скриншоты
+prompts/             промпт классификатора дайджеста (правка промпта инвалидирует его кэш)
+scripts/             happy path для PR- и GR-сценариев
+config.yaml          единый конфиг: каждая секция помечена, какой из двух загрузчиков её читает
+sources.json         единый пул источников в схеме платформы (+ weight для дайджеста)
+docker-compose.yaml  API + фронтенд; src/Dockerfile — многостадийная сборка на uv без root
+```
 
 ## Разработка
 
 ```bash
-uv run pytest -q             # тесты офлайн, HTTP через httpx.MockTransport + tests/fixtures/
-uv run ruff check src tests  # make lint / make test — те же команды
-uv run python -m src serve --reload   # API с автоперезапуском; или make docker-up
+uv run pytest -q                        # оба набора одним прогоном, офлайн: 2 808 тестов ≈ 1 минута
+uv run pytest -q tests/digest           # только дайджест (0.3 с)
+uv run pytest -q tests/unit/test_api.py # только платформа
+uv run ruff check src news_digest tests # make lint; make format — ruff format
+cd frontend && npm test && npm run build   # Vitest (163) и vue-tsc + vite
 ```
 
-Тесты собирают приложение фабрикой `create_app()` на временном `HUB_ROOT`, поэтому `.env`
-разработчика в тестах не читается; модель подменяется через `app.dependency_overrides`.
+Тесты платформы поднимают приложение фабрикой `create_app()` на временном `HUB_ROOT`, HTTP идёт через
+`httpx.MockTransport` и `tests/fixtures/`, модель подменяется `FakeLLM` через `dependency_overrides`;
+тесты дайджеста получают конфиг и энкодер конструктором (`Config.from_dict`, `FakeEncoder`).
+Единственный тест, которому нужна сеть или кэш модели, — золотой набор эмбеддингов
+(`tests/unit/test_gold_pairs.py`), без кэша Hugging Face он пропускается. CI (`.github/workflows/ci.yml`)
+гоняет ruff и оба набора на Ubuntu через `uv sync --locked`, отдельной задачей — тесты и сборку фронтенда.
 
-Проектная документация — в `docs/`.
+## Дорожная карта
+
+1. Разметить золотой набор карточек (~100 документов) и опубликовать recall по `high` и точность
+   приоритета — `quality --gold` уже умеет их считать.
+2. Перенести в платформу то, что пока есть только у дайджеста: доставку дайджеста в Telegram по
+   расписанию, сторожевой скрипт с алертами, пометку продолжений истории между днями, экспорт
+   размеченных пар для дистилляции. После этого `news_digest/` уходит из репозитория.
+3. Адаптеры для regulation.gov.ru и СОЗД (сейчас закрыты поисковым источником).
+
+## Документация
+
+`docs/architecture.md` — слои, контракты репозиториев, схема базы; `docs/ml.md` — обработка,
+эмбеддинги, кластеризация и как считать качество; `docs/monitoring.md` — наблюдаемость в
+эксплуатации; `docs/risks-and-ops.md` — нагрузка и поведение при недоступности модели;
+`frontend/README.md` и `frontend/docs/` — дашборд и его контракт с API.
