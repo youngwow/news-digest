@@ -28,6 +28,7 @@ from .models import (
 )
 from .models.queries import DocumentQuery, FeedQuery
 from .paths import DEFAULT_PATHS, ProjectPaths
+from .processing import dataset as dataset_mod
 from .processing import profile as company_profile
 from .processing.embeddings import build_embedder
 from .processing.llm import LlmConfigError, LlmError, build_provider
@@ -1458,6 +1459,22 @@ def _cmd_run(args, config: Config, paths: ProjectPaths) -> int:
     return result.exit_code
 
 
+def _cmd_dataset(args, config: Config, paths: ProjectPaths) -> int:
+    """Выгрузить размеченные карточки в JSONL и/или показать, сколько накопилось."""
+    db = Database(paths.db_path)
+    try:
+        examples = dataset_mod.load_examples(
+            db.conn, since=args.since, include_degraded=args.include_degraded
+        )
+    finally:
+        db.close()
+    if args.out:
+        written = dataset_mod.write_jsonl(examples, args.out)
+        print(f"{written} строк → {args.out}")
+    print(dataset_mod.format_stats(dataset_mod.stats(examples)))
+    return 0
+
+
 def _cmd_watchdog(args, config: Config, paths: ProjectPaths) -> int:
     """Сторож для cron: молчит, пока всё хорошо; иначе ALERT (и Telegram, если включено)."""
     db = Database(paths.db_path)
@@ -1691,6 +1708,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the digest instead of sending it even if telegram.deliver is on",
     )
     p.set_defaults(func=_cmd_run)
+
+    p = sub.add_parser(
+        "dataset", help="labelled cards as JSONL for training a local classifier; stats by default"
+    )
+    p.add_argument("--out", help="write JSONL here")
+    p.add_argument("--since", help="cards processed at or after this ISO timestamp")
+    p.add_argument(
+        "--include-degraded", action="store_true", help="keep cards built without the model"
+    )
+    p.set_defaults(func=_cmd_dataset)
 
     p = sub.add_parser(
         "watchdog", help="health of the pipeline for cron: silent when fine, ALERT block otherwise"
