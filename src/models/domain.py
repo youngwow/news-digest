@@ -490,6 +490,38 @@ PROCESSING_RUN_STATUSES = ("running", "done", "failed")
 
 
 @dataclass
+class DigestDelivery:
+    """Один отправленный (или напечатанный) дайджест: что, когда и куда ушло.
+
+    Карточки дайджеста лежат в `digest_delivery_items` вместе с `follow_up_of` —
+    ссылкой на ранее доставленную карточку той же истории (пометка 🔄). По этой
+    таблице `digest --undelivered` отбирает то, чего читатель ещё не видел.
+    """
+
+    sent_at: str
+    chat_id: str = ""  # "" — дайджест напечатан, но не отправлен (stdout / --record)
+    title: str = ""
+    parts: int = 1  # на сколько сообщений Telegram порезан текст
+    items_count: int = 0
+    body: str = ""  # текст как ушёл — `deliveries show <id>` печатает его заново
+    trigger: str = "cli"  # cli | run | api
+    id: int | None = None
+
+    @classmethod
+    def from_row(cls, row) -> "DigestDelivery":
+        return cls(
+            sent_at=row["sent_at"],
+            chat_id=row["chat_id"] or "",
+            title=row["title"] or "",
+            parts=int(row["parts"] or 1),
+            items_count=int(row["items_count"] or 0),
+            body=row["body"] or "",
+            trigger=row["trigger"] or "cli",
+            id=row["id"],
+        )
+
+
+@dataclass
 class ProcessingRun:
     """Один прогон обработки: кто запустил, с чем, что получилось (таблица `processing_runs`)."""
 

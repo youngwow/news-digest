@@ -47,6 +47,8 @@ class FeedQuery:
     # Только карточки с открытым предложением «вероятный дубль» со сходством не
     # ниже этого (0 — любое); None — фильтр не применяется.
     duplicate: float | None = None
+    # Только карточки, ещё не попавшие ни в один дайджест (`digest_delivery_items`).
+    undelivered: bool = False
 
     @classmethod
     def build(
@@ -66,6 +68,7 @@ class FeedQuery:
         include_hidden: bool = False,
         archived: str | None = None,
         duplicate=None,
+        undelivered: bool = False,
         timezone_name: str = "Europe/Moscow",
     ) -> "FeedQuery":
         """Собрать и проверить фильтр. Всё, что не проходит, — `QueryValidationError`."""
@@ -108,6 +111,7 @@ class FeedQuery:
             cursor=cursor,
             include_hidden=bool(include_hidden),
             archived=archived,
+            undelivered=bool(undelivered),
             duplicate=duplicate,
         )
 

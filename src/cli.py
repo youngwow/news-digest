@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from urllib.parse import urlsplit
 
 from courlan import get_base_url
@@ -38,6 +39,7 @@ from .processing.quality import (
     load_pairs,
 )
 from .repositories import Database, DuplicateSourceError
+from .services.digest_service import DeliveryError, DigestService
 from .services.feed_service import FeedService
 from .services.item_service import EDITABLE_FIELDS, REVERTIBLE_FIELDS, ItemService
 from .services.processing_service import ProcessingService
@@ -1311,16 +1313,39 @@ def _cmd_serve(args, config: Config, paths: ProjectPaths) -> int:
 
 
 def _cmd_digest(args, config: Config, paths: ProjectPaths) -> int:
+    fmt = "telegram" if args.send else args.format
     db, feed = _feed_service(config, paths)
     try:
-        result = feed.digest(
-            _feed_query(args, config, limit=200, order="priority"),
-            fmt=args.format,
-            title=args.title or "",
-            include_notes=args.include_notes,
-        )
+        query = _feed_query(args, config, limit=200, order="priority")
+        if fmt == "telegram":
+            service = DigestService(config, db, feed, env_path=paths.env_path)
+            doc = service.compose(query, title=args.title or "", undelivered=args.undelivered)
+            body = service.render(doc)
+            result = {"items": len(doc.cards), "body": body}
+            if doc.is_empty and (args.send or args.record):
+                print("нечего отправлять: в срезе нет карточек", file=sys.stderr)
+                return 0
+            if args.send:
+                delivery = service.send(doc, trigger="cli")
+                print(
+                    f"отправлено: {delivery.items_count} карточек, {delivery.parts} сообщение(й), "
+                    f"доставка #{delivery.id}",
+                    file=sys.stderr,
+                )
+            elif args.record:
+                delivery = service.record(doc, body, trigger="cli")
+                print(f"записано как доставка #{delivery.id} без отправки", file=sys.stderr)
+        else:
+            if args.undelivered:
+                query = replace(query, undelivered=True)
+            result = feed.digest(
+                query, fmt=fmt, title=args.title or "", include_notes=args.include_notes
+            )
     except QueryError as e:
         log.error("%s", e.message)
+        return 1
+    except DeliveryError as e:
+        log.error("%s", e)
         return 1
     finally:
         db.close()
@@ -1328,8 +1353,40 @@ def _cmd_digest(args, config: Config, paths: ProjectPaths) -> int:
         with open(args.out, "w", encoding="utf-8") as handle:
             handle.write(result["body"])
         print(f"{result['items']} материал(ов) → {args.out}")
-    else:
+    elif not args.send:
         print(result["body"])
+    return 0
+
+
+def _cmd_deliveries(args, config: Config, paths: ProjectPaths) -> int:
+    db = Database(paths.db_path)
+    try:
+        if args.id is not None:
+            delivery = db.deliveries.get(args.id)
+            if delivery is None:
+                log.error("доставка #%d не найдена", args.id)
+                return 1
+            print(delivery.body)
+            return 0
+        rows = db.deliveries.list(limit=args.limit)
+    finally:
+        db.close()
+    if not rows:
+        print("дайджест ещё ни разу не отправлялся")
+        return 0
+    table = [
+        [
+            str(d.id),
+            d.sent_at[:16].replace("T", " "),
+            d.trigger,
+            "чат " + d.chat_id if d.chat_id else "stdout",
+            str(d.items_count),
+            str(d.parts),
+            d.title[:40],
+        ]
+        for d in rows
+    ]
+    print(_table(["id", "когда (UTC)", "кто", "куда", "карточек", "частей", "заголовок"], table))
     return 0
 
 
@@ -1511,13 +1568,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=_cmd_items)
 
-    p = sub.add_parser("digest", help="export the current slice for a manager")
+    p = sub.add_parser("digest", help="digest of the current slice: markdown, json or Telegram")
     _feed_filter_args(p)
-    p.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    p.add_argument("--format", choices=("markdown", "json", "telegram"), default="markdown")
     p.add_argument("--title")
     p.add_argument("--include-notes", action="store_true", help="include analyst notes")
+    p.add_argument(
+        "--undelivered", action="store_true", help="only cards not yet included in a digest"
+    )
+    p.add_argument(
+        "--send", action="store_true",
+        help="send the Telegram digest to the chat (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID) and record it",
+    )
+    p.add_argument(
+        "--record", action="store_true",
+        help="record the digest as delivered without sending (printed digests count too)",
+    )
     p.add_argument("--out", help="write to a file instead of stdout")
     p.set_defaults(func=_cmd_digest)
+
+    p = sub.add_parser("deliveries", help="sent digests; `deliveries <id>` prints one again")
+    p.add_argument("id", type=int, nargs="?")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=_cmd_deliveries)
 
     sub.add_parser("status", help="collection and processing health").set_defaults(
         func=_cmd_status

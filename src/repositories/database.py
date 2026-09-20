@@ -15,6 +15,7 @@ import sqlite3
 
 from ..sources.textutil import normalized_source_url
 from ..utils import get_logger, to_utc_iso, utc_now
+from .deliveries import DeliveryRepo
 from .documents import SqliteDocumentRepository
 from .items import ClusterRepo, ItemNoteRepo, ItemTagRepo, SearchRepo, SqliteItemRepository
 from .processing import LlmCallRepo, ProcessingRunRepo, ProfileRepo, PromptRepo, RunRepo
@@ -389,6 +390,31 @@ UPDATE items SET analyst_note = '' WHERE analyst_note <> '';
 """
 
 
+# v9: дайджест перестаёт быть только срезом — отправленный (или напечатанный)
+# дайджест запоминается вместе со своими карточками. Отсюда `digest --undelivered`
+# («что читатель ещё не видел»), история `deliveries` и пометка продолжений 🔄
+# (`follow_up_of` — ранее доставленная карточка той же истории).
+_SCHEMA_V9 = """
+CREATE TABLE IF NOT EXISTS digest_deliveries (
+    id           INTEGER PRIMARY KEY,
+    sent_at      TEXT NOT NULL,
+    chat_id      TEXT NOT NULL DEFAULT '',
+    title        TEXT NOT NULL DEFAULT '',
+    parts        INTEGER NOT NULL DEFAULT 1,
+    items_count  INTEGER NOT NULL DEFAULT 0,
+    body         TEXT NOT NULL DEFAULT '',
+    trigger      TEXT NOT NULL DEFAULT 'cli'
+);
+CREATE TABLE IF NOT EXISTS digest_delivery_items (
+    delivery_id  INTEGER NOT NULL REFERENCES digest_deliveries(id) ON DELETE CASCADE,
+    item_id      INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    follow_up_of INTEGER REFERENCES items(id) ON DELETE SET NULL,
+    PRIMARY KEY (delivery_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_items_item ON digest_delivery_items(item_id);
+"""
+
+
 _MIGRATIONS: dict[int, str] = {
     1: _SCHEMA_V1,
     2: _SCHEMA_V2,
@@ -398,6 +424,7 @@ _MIGRATIONS: dict[int, str] = {
     6: _SCHEMA_V6,
     7: _SCHEMA_V7,
     8: _SCHEMA_V8,
+    9: _SCHEMA_V9,
 }
 
 
@@ -538,6 +565,7 @@ class Database:
         self.notes = ItemNoteRepo(self.conn)
         self.tags = ItemTagRepo(self.conn)
         self.search = SearchRepo(self.conn)
+        self.deliveries = DeliveryRepo(self.conn)
 
     def _migrate(self) -> None:
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]

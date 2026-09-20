@@ -239,7 +239,8 @@ class CategoriesConfig:
         return label or (category[:1].upper() + category[1:])
 
     def heading_for(self, category: str) -> str:
-        return f"{self.emoji_for(category)} {self.label_for(category)}"
+        emoji, label = self.emoji_for(category), self.label_for(category)
+        return label if label.startswith(emoji) else f"{emoji} {label}"
 
     @property
     def fallback(self) -> str:

@@ -148,6 +148,10 @@ def where(query: FeedQuery) -> tuple[list[str], list]:
             "AND COALESCE(json_extract(r.new_value, '$.similarity'), 0) >= ?)"
         )
         params.append(query.duplicate)
+    if query.undelivered:
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM digest_delivery_items dd WHERE dd.item_id = i.id)"
+        )
     return clauses, params
 
 

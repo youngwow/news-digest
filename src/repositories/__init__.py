@@ -5,6 +5,7 @@
 """
 
 from .database import MANUAL_FETCH_URL, MANUAL_SOURCE_NAME, Database
+from .deliveries import DeliveryRepo
 from .documents import SqliteDocumentRepository
 from .feed import SqliteFeedRepository
 from .items import ClusterRepo, ItemNoteRepo, ItemTagRepo, SearchRepo, SqliteItemRepository
@@ -23,6 +24,7 @@ __all__ = [
     "MANUAL_SOURCE_NAME",
     "ClusterRepo",
     "Database",
+    "DeliveryRepo",
     "DocumentRepository",
     "DuplicateSourceError",
     "FeedRepository",

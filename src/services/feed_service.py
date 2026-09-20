@@ -123,7 +123,23 @@ class FeedService:
         include_notes: bool = False,
         limit: int = 200,
     ) -> dict:
-        """Выгрузка среза. Ничего не сохраняет: дайджест — это срез, а не сущность."""
+        """Выгрузка среза. Ничего не сохраняет: дайджест — это срез, а не сущность.
+
+        `fmt="telegram"` собирает компактный текст для чата (главное → рубрики →
+        остальное, с пометкой продолжений) — той же `DigestService`, что и `--send`.
+        """
+        if fmt == "telegram":
+            from .digest_service import DigestService
+
+            service = DigestService(self.config, self.db, self)
+            doc = service.compose(query, title=title, limit=limit)
+            return {
+                "title": doc.title,
+                "generated_at": doc.generated_at,
+                "items": len(doc.cards),
+                "format": fmt,
+                "body": service.render(doc),
+            }
         rows = self.visible_slice(query, limit=limit)
         rows.sort(
             key=lambda r: ({"high": 0, "medium": 1}.get(r["priority"], 2), r["published_at"] or "")

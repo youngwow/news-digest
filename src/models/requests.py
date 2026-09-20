@@ -155,6 +155,6 @@ class CollectionRunRequest(_Request):
 
 class DigestRequest(_Request):
     filters: dict = Field(default_factory=dict)
-    format: str = "markdown"  # markdown | json
+    format: str = "markdown"  # markdown | json | telegram
     title: str = ""
     include_notes: bool = False  # заметка — черновая мысль, пока её не решили отправить
