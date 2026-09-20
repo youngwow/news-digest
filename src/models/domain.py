@@ -209,7 +209,7 @@ ITEM_TYPES = ("npa", "news")
 PRIORITIES = ("high", "medium", "low")
 NPA_STATUSES = ("анонс", "разработка", "внесён", "рассмотрение", "принят", "действует", "архив")
 ENTITY_ROLES = ("who", "what", "when", "impact", "org", "act_number")
-ITEM_TAGS = ("регуляторика", "репутация", "конкуренты", "тренды", "господдержка/льготы")
+# Словарь тегов (рубрик) живёт в config.yaml → categories; см. `CategoriesConfig`.
 
 
 def _json_list(raw) -> list:
@@ -443,16 +443,16 @@ class CompanyProfile:
 
     def prompt_block(self) -> str:
         """The profile as it goes into the prompt: stable order, no analyst-only fields."""
-        lines = [f"Компания: {self.name}"]
+        lines = [f"Профиль читателя: {self.name}"]
         labels = {
-            "industry": "Отрасль",
-            "products": "Продукты",
+            "industry": "Сфера",
+            "products": "Продукты и проекты",
             "stack": "Стек",
-            "regime": "Налоговый/аккредитационный режим",
+            "regime": "Режим (налоговый, аккредитация)",
             "regulators": "Регуляторы",
             "competitors": "Конкуренты",
             "topics": "Ключевые темы",
-            "negative_facets": "НЕ относится к компании",
+            "negative_facets": "НЕ относится к профилю",
         }
         for key, label in labels.items():
             value = self.payload.get(key)

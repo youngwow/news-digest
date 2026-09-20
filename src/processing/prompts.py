@@ -9,15 +9,16 @@ field (spec: «`analyst_note` никогда не отправляются во 
 from __future__ import annotations
 
 import json
+from typing import Sequence
 
-from ..models import ITEM_TAGS
 from .normalize import split_sentences
-from .schema import RESULT_SCHEMA
+from .schema import result_schema
 
 STAGE = "s2_s5"
 
-SYSTEM = """Ты — аналитик GR-мониторинга российской ИТ-компании.
-Отвечай только по присланному тексту, ничего не додумывая.
+SYSTEM = """Ты — редактор новостного мониторинга: превращаешь публикации в карточки
+для ленты и дайджеста по профилю читателя ниже. Отвечай только по присланному тексту,
+ничего не додумывая.
 
 Правила:
 1. summary — от 3 до 5 предложений на русском языке. Без вводных конструкций
@@ -39,13 +40,15 @@ SYSTEM = """Ты — аналитик GR-мониторинга российск
 6. npa_key — идентификатор акта строго из текста: номер законопроекта СОЗД,
    идентификатор проекта на regulation.gov.ru, номер и дата принятого акта.
    Нет явного идентификатора — null. Не сочиняй и не выводи его из заголовка.
-7. priority — относительно профиля компании ниже. high: прямо затрагивает продукты,
-   лицензии, налоговый режим, регуляторов или рынок компании. medium: отрасль в целом.
-   low: тематически близко, но к компании не относится (смотри «НЕ относится к компании»).
+7. priority — относительно профиля ниже. high: событие прямо по ключевым темам профиля
+   и с последствиями для читателя — крупный релиз или исследование, изменение правил,
+   рынка, цен, продуктов или регуляторов из профиля. medium: по теме профиля, но рядовое.
+   low: тематически рядом, но вне интересов, реклама, а также всё из «НЕ относится».
 8. reasoning — 1-2 предложения, почему именно такой приоритет. Их читает человек.
 9. relevance_score и confidence — числа от 0 до 1. confidence занижай, если текст
    обрезан пейволлом или это только анонс.
-10. tags — только из списка: {tags}. Ничего не выдумывай, пустой список допустим.
+10. tags — рубрики только из списка: {tags}. Первой ставь главную рубрику материала,
+    при необходимости добавь ещё одну-две. Ничего не выдумывай, пустой список допустим.
 
 Ответ — один JSON-объект и ничего больше: без рассуждений, без пояснений до или после,
 без markdown-разметки. Объект обязан соответствовать JSON Schema ниже; перечисления
@@ -68,7 +71,7 @@ TEMPLATE = """{profile}
 {evidence_table}"""
 
 
-def system_prompt() -> str:
+def system_prompt(tags: Sequence[str] = ()) -> str:
     """The system message, with the response schema spelled out inside it.
 
     Ollama Cloud accepts `format` and ignores it (docs.ollama.com: «Ollama's Cloud
@@ -77,8 +80,8 @@ def system_prompt() -> str:
     this block say the same thing, which is what the vendor recommends anyway.
     """
     return SYSTEM.format(
-        tags=", ".join(ITEM_TAGS),
-        schema=json.dumps(RESULT_SCHEMA, ensure_ascii=False, indent=1),
+        tags=", ".join(tags) if tags else "(рубрики не заданы — оставь пустой список)",
+        schema=json.dumps(result_schema(tags), ensure_ascii=False, indent=1),
     )
 
 
@@ -92,7 +95,7 @@ def build(
 ) -> str:
     """One cluster's prompt. Takes document fields only — never a card, never a note."""
     return TEMPLATE.format(
-        profile=profile_block or "Профиль компании не задан.",
+        profile=profile_block or "Профиль читателя не задан.",
         source=source or "не указан",
         title=title or "без заголовка",
         published=published or "не указана",

@@ -200,6 +200,25 @@ def extract_json(content: str) -> dict | None:
             continue
         if isinstance(data, dict):
             return data
+    return _repair_json(text)
+
+
+def _repair_json(text: str) -> dict | None:
+    """Last resort for a cloud answer that is almost JSON — a trailing comma, a bare
+    key, a truncated closing brace. `json_repair` fixes the syntax; whether the
+    object *means* anything is still decided by `schema.parse_result`."""
+    try:
+        from json_repair import loads as repair_loads
+    except ImportError:  # optional in the sense that the pipeline works without it
+        return None
+    for candidate in _json_candidates(text):
+        try:
+            data = repair_loads(candidate)
+        except Exception:  # noqa: BLE001 — a repair library may raise anything
+            continue
+        if isinstance(data, dict) and data:
+            log.info("ответ модели восстановлен из почти-JSON (json_repair)")
+            return data
     return None
 
 

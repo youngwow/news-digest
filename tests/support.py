@@ -66,6 +66,9 @@ def frozen_database(path: str, version: int) -> sqlite3.Connection:
     return conn
 
 
+TEST_TAGS = ["регуляторика", "репутация", "конкуренты", "тренды", "господдержка/льготы"]
+
+
 def default_raw_config() -> dict:
     """A fresh dict mirroring config.yaml (every key `Config.from_dict` requires)."""
     return {
@@ -93,6 +96,12 @@ def default_raw_config() -> dict:
         # Тесты подменяют эмбеддер явно (`embedder=...`); локальная модель весит
         # гигабайты и в тестах не грузится, поэтому провайдер здесь выключен.
         "embeddings": {"provider": "off"},
+        # Словарь рубрик тестового корпуса (теги в `news_answer`, `conftest.corpus`).
+        "categories": {
+            "order": TEST_TAGS,
+            "emoji": {"регуляторика": "⚖️", "тренды": "📈"},
+            "labels": {"господдержка/льготы": "Господдержка и льготы"},
+        },
     }
 
 

@@ -67,6 +67,12 @@ class TelegramConfig:
     concurrency: int = 2  # parallel MTProto history requests
     flood_sleep_threshold: float = 60.0  # longer FloodWait fails the source instead of waiting
     request_timeout: float = 60.0  # seconds for one channel's history
+    # Доставка дайджеста и алертов через Bot API (@BotFather); ключи — имена переменных в .env.
+    bot_token_env: str = "TELEGRAM_BOT_TOKEN"
+    chat_id_env: str = "TELEGRAM_CHAT_ID"
+    message_limit: int = 4096  # лимит Telegram на одно сообщение; дайджест режется на части
+    deliver: bool = False  # `run` и `digest --send` отправляют дайджест в чат
+    alerts: bool = False  # `watchdog` шлёт ALERT в тот же чат (одинаковые подряд подавляются)
 
     def __post_init__(self):
         # YAML 1.1 reads a bare `off` / `on` / `no` / `yes` as a boolean, and
@@ -205,6 +211,66 @@ class ApiConfig:
     timezone: str = "Europe/Moscow"  # чьи это сутки, когда фильтр получил голую дату
 
 
+DEFAULT_CATEGORIES = (
+    "ии", "технологии", "финансы", "экономика", "политика",
+    "петербург", "общество", "наука", "культура", "прочее",
+)
+DEFAULT_CATEGORY_EMOJI = {
+    "ии": "🤖", "технологии": "💻", "финансы": "📈", "экономика": "💰", "политика": "🏛️",
+    "петербург": "🏙️", "общество": "👥", "наука": "🔬", "культура": "🎭", "прочее": "📌",
+}
+DEFAULT_CATEGORY_LABELS = {"ии": "ИИ и данные", "финансы": "Финансы и инвестиции"}
+
+
+@dataclass(frozen=True)
+class CategoriesConfig:
+    """Рубрики — один словарь на три роли: enum тегов в схеме ответа модели, список в
+    фильтре ленты и группы Telegram-дайджеста. Первый тег карточки — её рубрика."""
+
+    order: list[str] = field(default_factory=lambda: list(DEFAULT_CATEGORIES))
+    emoji: dict = field(default_factory=lambda: dict(DEFAULT_CATEGORY_EMOJI))
+    labels: dict = field(default_factory=lambda: dict(DEFAULT_CATEGORY_LABELS))
+
+    def emoji_for(self, category: str) -> str:
+        return self.emoji.get(category, "📌")
+
+    def label_for(self, category: str) -> str:
+        label = self.labels.get(category)
+        return label or (category[:1].upper() + category[1:])
+
+    def heading_for(self, category: str) -> str:
+        return f"{self.emoji_for(category)} {self.label_for(category)}"
+
+    @property
+    def fallback(self) -> str:
+        """Рубрика карточки без тегов из словаря — последняя в списке («прочее»)."""
+        return self.order[-1]
+
+
+@dataclass(frozen=True)
+class DigestConfig:
+    """Telegram-дайджест: размер разделов и пометка продолжений истории (🔄)."""
+
+    top: int = 5  # карточек в «Главном»
+    per_category: int = 5  # карточек в одной рубрике
+    rest: int = 20  # заголовков в «Также в новостях»
+    threads_enabled: bool = True  # помечать карточки, продолжающие уже доставленные
+    threads_lookback_days: int = 3  # среди доставленных за это окно
+    # Косинус между эмбеддингами документов (та же модель, что в S1): продолжение одной
+    # истории лежит между «той же темой» (~0.68) и «тем же событием» (S1 склеивает от 0.86).
+    threads_similarity: float = 0.75
+
+
+@dataclass(frozen=True)
+class HealthConfig:
+    """Пороги сторожа (`watchdog`): когда прогон считается нездоровым."""
+
+    max_collect_age_minutes: int = 360  # давность последнего сбора
+    max_unprocessed: int = 300  # документов без карточки
+    max_source_failures: int = 5  # неудач подряд у источника
+    min_sources_ok_share: float = 0.5  # доля успешных источников в последнем сборе
+
+
 _SECTIONS = {
     "scraper": ScraperConfig,
     "telegram": TelegramConfig,
@@ -215,6 +281,9 @@ _SECTIONS = {
     "embeddings": EmbeddingsConfig,
     "clustering": ClusteringConfig,
     "api": ApiConfig,
+    "categories": CategoriesConfig,
+    "digest": DigestConfig,
+    "health": HealthConfig,
 }
 
 
@@ -252,6 +321,9 @@ class Config:
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
+    categories: CategoriesConfig = field(default_factory=CategoriesConfig)
+    digest: DigestConfig = field(default_factory=DigestConfig)
+    health: HealthConfig = field(default_factory=HealthConfig)
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -396,6 +468,34 @@ class Config:
             ZoneInfo(self.api.timezone)
         except (ZoneInfoNotFoundError, ValueError) as e:
             raise ConfigError(f"config.yaml: unknown api.timezone '{self.api.timezone}'") from e
+        cats = self.categories
+        if not isinstance(cats.order, list) or not cats.order:
+            raise ConfigError("config.yaml: categories.order must be a non-empty list")
+        if any(not isinstance(c, str) or not c.strip() for c in cats.order):
+            raise ConfigError("config.yaml: categories.order entries must be non-empty strings")
+        if len(set(cats.order)) != len(cats.order):
+            raise ConfigError("config.yaml: categories.order has duplicates")
+        if not isinstance(cats.emoji, dict) or not isinstance(cats.labels, dict):
+            raise ConfigError("config.yaml: categories.emoji and categories.labels must be mappings")
+        dg = self.digest
+        if dg.top < 1 or dg.per_category < 1 or dg.rest < 0:
+            raise ConfigError(
+                "config.yaml: digest.top and per_category must be >= 1, rest >= 0"
+            )
+        if dg.threads_lookback_days < 1 or not 0 <= dg.threads_similarity <= 1:
+            raise ConfigError(
+                "config.yaml: digest.threads_lookback_days >= 1 and threads_similarity within [0, 1]"
+            )
+        if tg.message_limit < 100:
+            raise ConfigError("config.yaml: telegram.message_limit must be >= 100")
+        hc = self.health
+        if hc.max_collect_age_minutes < 1 or hc.max_unprocessed < 0 or hc.max_source_failures < 1:
+            raise ConfigError(
+                "config.yaml: health.max_collect_age_minutes and max_source_failures must be >= 1, "
+                "max_unprocessed >= 0"
+            )
+        if not 0 <= hc.min_sources_ok_share <= 1:
+            raise ConfigError("config.yaml: health.min_sources_ok_share must be within [0, 1]")
 
 
 # ── process settings (environment / .env) ──────────────────────────────────

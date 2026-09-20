@@ -110,7 +110,9 @@ class ProcessingService:
         self.db = db
         self.provider = provider
         self.embedder = embedder
-        self.pipeline = Pipeline(config.processing, config.llm, provider)
+        self.pipeline = Pipeline(
+            config.processing, config.llm, provider, tags=config.categories.order
+        )
         # Карточные операции без модели живут в ItemService; здесь он нужен ради
         # общей записи ревизий модели (US-8).
         self.items = ItemService(config, db)

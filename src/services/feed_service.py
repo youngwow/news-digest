@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from ..config import Config
-from ..models import ITEM_TAGS, ITEM_TYPES, NPA_STATUSES, PRIORITIES
+from ..models import ITEM_TYPES, NPA_STATUSES, PRIORITIES
 from ..models.queries import DocumentQuery, FeedQuery
 from ..repositories import Database, FeedRepository, SqliteFeedRepository
 from ..utils import get_logger, parse_datetime, to_utc_iso, utc_now
@@ -84,7 +84,7 @@ class FeedService:
         ]
         return {
             "sources": sources,
-            "tags": self.repository.tags_in_use() or list(ITEM_TAGS),
+            "tags": self.repository.tags_in_use() or list(self.config.categories.order),
             "npa_statuses": list(NPA_STATUSES),
             "priorities": list(PRIORITIES),
             "types": list(ITEM_TYPES),

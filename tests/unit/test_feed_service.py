@@ -10,9 +10,10 @@ import sqlite3
 from datetime import datetime
 
 import pytest
+from support import TEST_TAGS
 
 from src.config import Config
-from src.models import ITEM_TAGS, ITEM_TYPES, NPA_STATUSES, PRIORITIES
+from src.models import ITEM_TYPES, NPA_STATUSES, PRIORITIES
 from src.models.queries import DocumentQuery, FeedQuery
 from src.services.feed_service import FeedService, local_today
 
@@ -273,7 +274,7 @@ def test_filters_offers_the_tags_actually_in_use_most_common_first(feed, corpus)
 
 
 def test_filters_falls_back_to_the_vocabulary_when_nothing_is_tagged_yet(feed):
-    assert feed.filters()["tags"] == list(ITEM_TAGS)
+    assert feed.filters()["tags"] == TEST_TAGS
 
 
 def test_filters_carries_the_vocabularies_and_the_configured_timezone(feed, config):

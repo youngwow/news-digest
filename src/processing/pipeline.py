@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Sequence
 
 from ..config import LLMConfig, ProcessingConfig
 from ..models import CompanyProfile, LlmCall
 from ..utils import get_logger
 from . import normalize, prompts
 from .llm import Completion, LlmConfigError, LlmError, LLMProvider
-from .schema import RESULT_SCHEMA, InvalidResponse, ParsedResult, parse_result
+from .schema import InvalidResponse, ParsedResult, parse_result, result_schema
 
 log = get_logger("pipeline")
 
@@ -75,10 +76,14 @@ class Pipeline:
         config: ProcessingConfig,
         llm_config: LLMConfig,
         provider: LLMProvider | None,
+        tags: Sequence[str] = (),
     ):
         self.config = config
         self.llm = llm_config
         self.provider = provider
+        self.tags = tuple(tags)  # рубрики из config.yaml → categories; enum в схеме ответа
+        self.schema = result_schema(self.tags)
+        self.system = prompts.system_prompt(self.tags)
 
     def process(
         self,
@@ -114,7 +119,7 @@ class Pipeline:
                 log.warning("модель недоступна (%s), карточка деградирует", e)
                 return self._baseline(norm_text, title, str(e), truncated, calls)
             try:
-                result = parse_result(completion.data, text_length=len(text))
+                result = parse_result(completion.data, text_length=len(text), tags=self.tags)
             except InvalidResponse as e:
                 reason = str(e)
                 calls[-1].status = "retry"
@@ -127,9 +132,7 @@ class Pipeline:
     def _complete(self, prompt: str, calls: list[LlmCall]) -> Completion:
         started = time.monotonic()
         try:
-            completion = self.provider.complete(
-                prompt, RESULT_SCHEMA, system=prompts.system_prompt()
-            )
+            completion = self.provider.complete(prompt, self.schema, system=self.system)
         except LlmError as e:
             calls.append(
                 LlmCall(

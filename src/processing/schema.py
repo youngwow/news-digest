@@ -15,9 +15,11 @@ when the shape changes.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
+from typing import Sequence
 
-from ..models import ENTITY_ROLES, ITEM_TAGS, ITEM_TYPES, NPA_STATUSES, PRIORITIES
+from ..models import ENTITY_ROLES, ITEM_TYPES, NPA_STATUSES, PRIORITIES
 
 ENTITY_KEYS = ("who", "what", "when", "impact")
 _MODEL_STATUSES = [s for s in NPA_STATUSES if s != "архив"]
@@ -51,7 +53,7 @@ RESULT_SCHEMA: dict = {
         "relevance_score": {"type": "number", "minimum": 0, "maximum": 1},
         "reasoning": {"type": "string"},
         "matched_profile_facets": {"type": "array", "items": {"type": "string"}},
-        "tags": {"type": "array", "items": {"type": "string", "enum": list(ITEM_TAGS)}},
+        "tags": {"type": "array", "items": {"type": "string"}},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "evidence_offsets": {
             "type": "array",
@@ -59,6 +61,17 @@ RESULT_SCHEMA: dict = {
         },
     },
 }
+
+
+def result_schema(tags: Sequence[str] = ()) -> dict:
+    """`RESULT_SCHEMA` with the tag vocabulary (config.yaml → categories) as the enum.
+
+    Без словаря теги — любые строки; `parse_result` их тогда тоже не фильтрует.
+    """
+    schema = copy.deepcopy(RESULT_SCHEMA)
+    if tags:
+        schema["properties"]["tags"]["items"]["enum"] = list(tags)
+    return schema
 
 
 class InvalidResponse(ValueError):
@@ -99,7 +112,12 @@ def _number(data: dict, key: str) -> float:
 
 
 def parse_result(
-    data: dict, *, text_length: int = 0, min_sentences: int = 3, max_sentences: int = 5
+    data: dict,
+    *,
+    text_length: int = 0,
+    min_sentences: int = 3,
+    max_sentences: int = 5,
+    tags: Sequence[str] | None = None,
 ) -> ParsedResult:
     """Validate one model answer; raise `InvalidResponse` when it cannot be used.
 
@@ -160,7 +178,11 @@ def parse_result(
                 continue
         offsets.append((start, end))
 
-    tags = [t for t in (str(t).strip() for t in data.get("tags") or []) if t in ITEM_TAGS]
+    vocabulary = set(tags or ())
+    tags = [
+        t for t in (str(t).strip() for t in data.get("tags") or [])
+        if t and (not vocabulary or t in vocabulary)
+    ]
     facets = [str(f).strip() for f in data.get("matched_profile_facets") or [] if str(f).strip()]
 
     return ParsedResult(
