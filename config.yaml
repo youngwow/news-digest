@@ -1,85 +1,194 @@
-# news-digest pipeline configuration
+# news-digest — единый config.yaml для обоих пакетов.
+#
+# Секции читают два загрузчика, каждый берёт только свои ключи:
+#   • src/config.py          — платформа: сбор, обработка карточек, лента, API
+#                              (scraper, telegram, sitemap, tavily, llm, processing, embeddings, clustering, api);
+#   • news_digest/config.py  — Telegram-дайджест: RSS → LLM-классификация → дайджест
+#                              (llm, scraper, pipeline, telegram, health, dedup, archive, threads, heuristics, categories).
+# В общих секциях (scraper, telegram, llm) ключи не пересекаются, кроме четырёх базовых
+# параметров scraper — они одни на оба сборщика.
+
+# ── Сбор источников ─────────────────────────────────────────────────────────
+
+scraper:
+  # общие для обоих сборщиков
+  date_window_hours: 72           # платформа: на первом запуске берём материалы не старше этого окна;
+                                  # дайджест: окно каждого прогона (уже доставленное отсекает dedup.cross_run_*)
+  request_timeout: 30             # секунд на один HTTP-запрос (Коммерсантъ, CNews, ТАСС из-за рубежа отвечают ~17 с)
+  max_redirects: 5
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 NewsDigest/0.4"
+  # платформа (src/sources)
+  accept_language: "ru-RU,ru;q=0.9,en;q=0.5"
+  concurrency: 8                  # источников опрашивается параллельно
+  per_host_concurrency: 2         # одновременных запросов к одному хосту (gov.ru банит за бурсты)
+  fetch_fulltext: true            # дотягивать полный текст статьи, если в ленте только анонс
+  fulltext_timeout: 15            # секунд на загрузку страницы статьи
+  fulltext_max_chars: 20000       # обрезать извлечённый текст до этой длины
+  max_new_per_source: 50          # не больше стольких новых материалов с источника за один проход
+  store_raw_html: false           # хранить исходный HTML документа (раздувает БД; включать для отладки)
+  # дайджест (news_digest/sources)
+  fetch_bodies: false             # дотягивать текст статьи в промпт классификатора (для локальной модели)
+  body_max_chars: 3000            # обрезать текст до этой длины
+  body_timeout: 10                # секунд на загрузку страницы
+  body_concurrency: 8             # параллельных загрузчиков
+  body_cache_retention_days: 14   # чистить data/body_cache/ старше этого
+
+telegram:
+  # платформа: каналы как источники (src/sources/scraper_tg.py, telegram_mtproto.py)
+  backfill_pages: 1               # сколько страниц t.me/s/<канал> листать при --backfill
+  mtproto: auto                   # auto (MTProto при наличии сессии, иначе веб-превью) | off | only
+  api_id_env: TELEGRAM_API_ID     # имя переменной окружения / ключа в .env (my.telegram.org)
+  api_hash_env: TELEGRAM_API_HASH
+  session_name: telegram          # файл сессии data/<session_name>.session — это доступ к аккаунту
+  max_posts: 100                  # постов с канала за один проход по MTProto
+  backfill_posts: 300             # постов с канала при --backfill
+  concurrency: 2                  # параллельных запросов истории (аккаунт лучше не разгонять)
+  flood_sleep_threshold: 60       # секунд: более долгий FloodWait — ошибка источника, а не ожидание
+  request_timeout: 60             # секунд на историю одного канала
+  # дайджест: доставка через Bot API (news_digest/delivery/telegram.py)
+  message_limit: 4096             # лимит Telegram на одно сообщение; дайджест режется на части
+  enabled: false                  # true → `news_digest run` отправляет дайджест в чат
+                                  # (нужны TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID в .env)
+  alerts: false                   # true → pipeline_check.sh шлёт ALERT в тот же чат
+                                  # (независимо от `enabled`; одинаковые подряд алерты подавляются)
+
+sitemap:
+  max_sitemaps: 5                 # сколько дочерних sitemap из sitemapindex обрабатывать (свежие первыми)
+  max_urls: 200                   # сколько URL из sitemap рассматривать за проход
+
+tavily:
+  api_key_env: TAVILY_API         # имя переменной окружения / ключа в .env
+  max_results: 10                 # для discover; поисковые источники (search) запрашивают 20
+  search_depth: basic             # basic | fast | advanced (advanced стоит 2 кредита)
+  days: 7                         # окно свежести для search по умолчанию (--days)
+  country: russia                 # приоритет российских результатов (только topic=general)
+  language: ru                    # язык результатов и сводки (без него Tavily отвечает по-английски)
+
+# ── Модель ──────────────────────────────────────────────────────────────────
 
 llm:
-  active: cloud                 # name from `providers` below; flip to switch backends
-  classify_concurrency: 4       # parallel chunk classification workers (any provider)
-  cache_retention_days: 7       # prune data/chunk_cache/ entries older than this
-  failure_tolerance: 0.34       # ok if <= this ratio of chunks fail (0.0 = strict, 1.0 = ignore)
-  bad_json_retry: true          # on unparseable LLM output, retry chunk with stricter prompt
+  # платформа: один structured-output вызов на кластер (src/processing/llm.py)
+  host: "https://ollama.com"      # Ollama Cloud; для локального сервера — http://localhost:11434
+  model: glm-5.3-flash            # тег модели должен совпадать с облачным буквально
+  api_key_env: OLLAMA_API_KEY     # имя переменной окружения / ключа в .env
+  embed_model: embeddinggemma     # облачные эмбеддинги — только при embeddings.provider: ollama
+  embed_dimensions: 768           # длина вектора облачной модели
+  request_timeout: 300            # секунд на один вызов: GLM-5.3 «размышляет» минутами
+  max_retries: 2                  # повторов при 429 / 5xx, дальше — экстрактивная деградация
+  retry_backoff: 2.0              # секунд до первого повтора, дальше удваивается
+  temperature: 0.2                # ниже — стабильнее структура и меньше выдумок
+  think:                          # пусто — параметр не отправляется: рассуждения модели уходят
+                                  # в message.thinking, а в content остаётся чистый JSON.
+                                  # think: false заставляет модель рассуждать прямо в content
+  max_output_tokens: -1           # -1 — без потолка: обрезанный ответ это потраченный впустую вызов
+  # дайджест: классификация чанков по OpenAI-совместимому API (news_digest/classify)
+  active: cloud                   # имя из `providers`; переключает бэкенд
+  classify_concurrency: 4         # параллельных воркеров классификации
+  cache_retention_days: 7         # чистить data/chunk_cache/ старше этого
+  failure_tolerance: 0.34         # ок, если упало не больше этой доли чанков (0.0 — строго, 1.0 — игнорировать)
+  bad_json_retry: true            # на неразбираемый ответ — повтор чанка со строгим промптом
   providers:
     - name: cloud
       base_url: "https://ollama.com/v1"
       model: "deepseek-v4-flash:cloud"
-      api_key_env: "OLLAMA_API_KEY"   # null/missing → no Authorization header sent
+      api_key_env: "OLLAMA_API_KEY"   # null/отсутствует → заголовок Authorization не шлётся
       temperature: 0.3
       max_tokens: 16384
       timeout: 180
       max_retries: 3
     - name: local
       base_url: "http://localhost:11434/v1"
-      model: "gemma4:e4b"             # whichever model `ollama pull`ed locally
+      model: "gemma4:e4b"             # то, что `ollama pull`-нуто локально
       api_key_env: null
       temperature: 0.3
       max_tokens: 16384
       timeout: 300
       max_retries: 2
 
-scraper:
-  date_window_hours: 8
-  request_timeout: 20  # seconds per HTTP request
-  max_redirects: 5
-  user_agent: "Mozilla/5.0 (compatible; NewsDigestBot/1.0; +https://github.com/hermes)"
-  fetch_bodies: false               # off by default; flip to true for richer LLM context
-  body_max_chars: 3000              # truncate fetched body to this length
-  body_timeout: 10                  # seconds per body GET
-  body_concurrency: 8               # parallel fetchers
-  body_cache_retention_days: 14     # prune data/body_cache/ entries older than this
+# ── Платформа: обработка карточек, лента, API (src/) ───────────────────────
+
+processing:
+  concurrency: 3                  # Ollama Pro: максимум 3 одновременных запроса
+  max_new_per_run: 200            # карточек за один прогон process
+  max_chars: 12000                # символов текста в промпт; длиннее — map-reduce по чанкам
+  chunk_chars: 6000               # размер чанка при map-reduce
+  candidate_window_days: 7        # в каком окне искать дубли и перепечатки
+  simhash_distance: 8             # максимум расстояния Хэмминга для «почти дубля»:
+                                  # правка-перепечатка даёт 2-4, разные документы — от 18
+  cosine_threshold: 0.86          # порог схлопывания по эмбеддингам (консервативный)
+  borderline_low: 0.35            # нижняя граница пограничной зоны relevance_score
+  borderline_high: 0.5            # верхняя граница; в ней приоритет повышается на ступень
+
+embeddings:
+  provider: local                 # local | ollama | off. local — модель на этой машине, ключ не нужен;
+                                  # ollama — облако (llm.host, llm.embed_model, ключ); off — S1 без эмбеддингов
+  model: ai-sage/Giga-Embeddings-instruct   # sentence-transformers, ~3B параметров, 2048 измерений
+  device: auto                    # auto | mps | cuda | cpu; auto: cuda → mps (Apple Silicon) → cpu
+  dtype: auto                     # auto | bfloat16 | float16 | float32; auto: bfloat16 на ускорителе
+  batch_size: 16
+  max_seq_length: 1024            # токенов на текст (модель умеет 4096; S1 режет текст до 2000 символов)
+  dimensions: 2048                # ожидаемая длина вектора; другая длина в базе — прежняя модель
+  prompt: "Instruct: Retrieve news that report the same event\nQuery: "
+                                  # инструкция instruct-модели, одна для обеих сторон: на парах «дубль / не дубль»
+                                  # дубли ≥ 0.91, не-дубли ≤ 0.80 (без неё 0.795 / 0.669). Пусто — режим документа
+
+clustering:                       # вторая дедупликация: карточки-дубли после прогона (HDBSCAN по саммари)
+  enabled: true
+  min_cluster_size: 2             # дубль — это уже пара; см. `quality --pairs --grid`
+  min_samples: 1                  # больше — консервативнее: больше карточек уходит в шум
+  cluster_selection_method: eom   # eom — устойчивые группы (и пара в пуле из одиночек), leaf — самые мелкие
+  cluster_selection_epsilon: 0.0  # 0 — соседние кластеры не склеиваются
+  min_similarity: 0.7             # нижний край зоны «вероятный дубль»: внутри кластера HDBSCAN остаются связные
+                                  # компоненты по косинусу ≥ этого; верхний край — processing.cosine_threshold (S1 склеивает сам)
+  reduction: pca                  # none | pca | umap (umap: `uv sync --extra umap`)
+  n_components: 32                # размерность после снижения; 0 — без снижения
+  window_days: 7                  # свежие карточки сравниваются с карточками этого окна
+  max_pool: 500                   # не больше стольких карточек окна за один прогон
+  seed: 0
+
+api:
+  # Адрес, порт, /docs и CORS — параметры окружения: HOST, PORT, DOCS, CORS_ORIGINS в .env
+  timezone: Europe/Moscow         # голая дата в фильтре — это местные сутки, а не UTC
+
+# ── Telegram-дайджест (news_digest/) ────────────────────────────────────────
 
 pipeline:
-  chunk_size: 15             # articles per classification chunk
-  training_log: true         # append LLM-labeled rows to data/training/dataset.jsonl each run
-
-telegram:
-  message_limit: 4096
-  enabled: false             # true → run.sh delivers the digest via Bot API
-                             # (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env)
-  alerts: false              # true → pipeline_check.sh pushes ALERT output to the same chat
-                             # (independent of `enabled`; duplicate alerts are suppressed)
+  chunk_size: 15                  # статей в одном чанке классификации
+  training_log: true              # дописывать размеченные моделью строки в data/training/dataset.jsonl
 
 health:
-  min_sources_ok: 3
-  expected_sources: 10
-  default_max_age_minutes: 360  # 6 hours
+  min_sources_ok: 3               # меньше успешных источников — прогон нездоров
+  expected_sources: 19            # сколько RSS-источников ждём в data/raw_news.json (включённые kind: rss в sources.json)
+  default_max_age_minutes: 360    # свежесть артефактов: 6 часов
 
 dedup:
-  overlap_threshold: 0.50          # merge if shared-word ratio exceeds this
-  shared_words_min: 5              # merge if at least this many significant words match
-  containment_min_len: 15          # min title length to trigger substring containment check
-  cross_run_enabled: true          # filter URLs already delivered in a recent digest
-  cross_run_retention_days: 1      # remember delivered URLs for this many days
-  semantic_enabled: true           # embedding-based dedup pass after word overlap
-                                   # (needs `pip install -e ".[ml]"`; falls back gracefully)
-  semantic_threshold: 0.70         # cosine similarity ≥ this merges two stories
-                                   # (calibrated on real digests; valid for both backends below.
-                                   #  NB: paraphrase-* models (MiniLM/mpnet) conflate same-topic with
-                                   #  same-event on news titles — keep bitext-style models here)
-  semantic_model: "sentence-transformers/LaBSE"               # primary backend (torch; auto-selects MPS/CUDA)
-  semantic_model_static: "minishlab/potion-multilingual-128M" # fallback backend (model2vec, no torch)
+  overlap_threshold: 0.50         # склеить, если доля общих значимых слов выше
+  shared_words_min: 5             # или если общих значимых слов не меньше стольких
+  containment_min_len: 15         # минимальная длина заголовка для проверки вхождения подстрокой
+  cross_run_enabled: true         # отбрасывать URL, уже доставленные в недавнем дайджесте
+  cross_run_retention_days: 3     # помнить доставленные URL столько дней (не меньше scraper.date_window_hours)
+  semantic_enabled: true          # проход по эмбеддингам после словесного пересечения
+  semantic_threshold: 0.70        # косинус ≥ этого склеивает две истории
+                                  # (откалибровано на реальных дайджестах для обоих бэкендов ниже.
+                                  #  NB: paraphrase-модели (MiniLM/mpnet) путают «та же тема» с «то же событие» —
+                                  #  здесь нужны bitext-модели)
+  semantic_model: "sentence-transformers/LaBSE"               # основной бэкенд (torch; MPS/CUDA выбираются сами)
+  semantic_model_static: "minishlab/potion-multilingual-128M" # запасной (model2vec, без torch; `uv sync --extra ml`)
 
 archive:
-  retention_days: 30               # prune data/digests/ snapshots older than this
+  retention_days: 30              # чистить data/digests/ старше этого
 
 threads:
-  enabled: true                    # mark stories that develop a recently-delivered story (🔄)
-  lookback_days: 3                 # compare against archive snapshots from this window
-  similarity_threshold: 0.60       # cosine ≥ this links a story to an archived one
-                                   # (calibrated on real follow-ups: true threads ≥ 0.66, noise ≤ 0.53)
+  enabled: true                   # помечать истории, продолжающие недавно доставленные (🔄)
+  lookback_days: 3                # сравнивать со снимками архива за это окно
+  similarity_threshold: 0.60      # косинус ≥ этого связывает историю с архивной
+                                  # (откалибровано на реальных продолжениях: настоящие ≥ 0.66, шум ≤ 0.53)
 
 heuristics:
-  multi_source_max_boost: 2        # cap on +importance from sources covering same story
-  recency_window_hours: 2          # articles published within this window get a boost
-  recency_boost: 1                 # importance added for recent stories
-  source_weight_max_boost: 1       # cap on +importance from high-trust sources
+  multi_source_max_boost: 2       # потолок +важности за несколько источников одной истории
+  recency_window_hours: 2         # статьи, вышедшие в это окно, получают надбавку
+  recency_boost: 1                # сколько важности добавлять свежим историям
+  source_weight_max_boost: 1      # потолок +важности за источники с высоким весом (sources.json → weight)
 
 categories:
   order:

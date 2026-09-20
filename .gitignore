@@ -6,9 +6,6 @@ __pycache__/
 # C extensions
 *.so
 
-# Pipeline runtime data (generated on every run)
-data/
-
 # Distribution / packaging
 .Python
 build/
@@ -222,7 +219,18 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# LLMs
+# Runtime data of both pipelines (SQLite, digests, caches) — generated on every run
+data/
+
+# Telegram MTProto session — equals full access to the account, never commit
+data/*.session
+data/*.session-journal
+data/telegram.session
+.DS_Store
+.specify
+specs
+
+# LLM assistants / editors
 CLAUDE.MD
 GEMINI.MD
 .claude/

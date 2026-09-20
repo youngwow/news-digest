@@ -128,6 +128,22 @@ class Scraper:
             raise FileNotFoundError(f"Sources file not found: {self.paths.sources_path}")
         return load_json(self.paths.sources_path).get("sources", [])
 
+    @staticmethod
+    def feed_url(source: dict) -> str | None:
+        """The RSS/Atom URL this pipeline should poll for `source`, or None to skip it.
+
+        sources.json is shared with the platform (`src/`): an entry is polled when
+        it is `kind: rss` (its `fetch_url`) and not `enabled: false`. The original
+        `rss` key of the first-version schema is still honoured.
+        """
+        if source.get("enabled") is False:
+            return None
+        if source.get("rss"):
+            return source["rss"]
+        if source.get("kind") == "rss" and source.get("fetch_url"):
+            return source["fetch_url"]
+        return None
+
     def is_within_window(self, published: str | None) -> bool:
         if published is None:
             return False
@@ -184,10 +200,13 @@ class Scraper:
         log.info("Loading sources from %s", self.paths.sources_path)
         sources = self.load_sources()
         log.info("Found %d sources", len(sources))
-        valid = [s for s in sources if s.get("rss")]
+        valid = [s for s in sources if self.feed_url(s)]
         for s in sources:
-            if not s.get("rss"):
-                log.warning("Skipping %s — no RSS URL", s.get("name", "unknown"))
+            if s.get("enabled") is False:
+                log.info("Skipping %s — disabled in sources.json", s.get("name", "unknown"))
+            elif not self.feed_url(s):
+                log.info("Skipping %s — not an RSS source (kind=%s)",
+                         s.get("name", "unknown"), s.get("kind", "?"))
 
         articles: list[Article] = []
         samples: list[dict] = []
@@ -201,7 +220,8 @@ class Scraper:
         with httpx.Client(timeout=cfg.request_timeout, max_redirects=cfg.max_redirects,
                           headers={"User-Agent": cfg.user_agent}) as client:
             with ThreadPoolExecutor(max_workers=min(10, len(valid) or 1)) as pool:
-                futures = {pool.submit(timed_fetch, client, s["name"], s["rss"]): s for s in valid}
+                futures = {pool.submit(timed_fetch, client, s["name"], self.feed_url(s)): s
+                           for s in valid}
                 for fut in as_completed(futures):
                     name = futures[fut].get("name", "unknown")
                     xml, latency_ms = fut.result()
