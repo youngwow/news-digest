@@ -33,7 +33,7 @@
 
 Проект начинался как личный RSS → LLM → Telegram дайджест; текущий код обновлён на базе версии,
 написанной во время хакатона (командный кейс, репозиторий команды —
-[youngwow/ai-analytics-hub](https://github.com/youngwow/ai-analytics-hub)), с полной историей коммитов.
+[youngwow/ai-analytics-hub](https://github.com/youngwow/ai-analytics-hub)).
 
 ## Быстрый старт
 
