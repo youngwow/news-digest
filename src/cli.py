@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from courlan import get_base_url
 
 from .config import Config, ConfigError
+from .delivery.telegram import TelegramBot
 from .exceptions import ItemError, QueryError, SourceError
 from .models import (
     CATEGORIES,
@@ -42,8 +43,10 @@ from .repositories import Database, DuplicateSourceError
 from .services.digest_service import DeliveryError, DigestService
 from .services.feed_service import FeedService
 from .services.item_service import EDITABLE_FIELDS, REVERTIBLE_FIELDS, ItemService
+from .services.pipeline_run import PipelineRun
 from .services.processing_service import ProcessingService
 from .services.source_service import SourceService
+from .services.watchdog import Watchdog
 from .sources.base import HostLimiter, make_client
 from .sources.collector import Collector
 from .sources.resolver import Resolver
@@ -1390,6 +1393,86 @@ def _cmd_deliveries(args, config: Config, paths: ProjectPaths) -> int:
     return 0
 
 
+def _cmd_run(args, config: Config, paths: ProjectPaths) -> int:
+    """Один запуск для cron: сбор → обработка → дайджест (в чат или на stdout)."""
+    deliver = config.telegram.deliver and not args.no_deliver
+
+    def collect() -> tuple[str, str]:
+        db = Database(paths.db_path)
+        try:
+            report = Collector(config, paths, db).run()
+        finally:
+            db.close()
+        polled = len(report.per_source)
+        if polled and report.sources_fail == polled:
+            return "failed", f"ни один из {polled} источников не ответил"
+        return "ok", report.summary_line()
+
+    def process() -> tuple[str, str]:
+        db, service = _processing(config, paths)
+        try:
+            report = service.run(limit=args.limit)
+        except LlmConfigError as e:
+            return "failed", str(e)
+        finally:
+            service.close()
+            db.close()
+        detail = (
+            f"+{report.items_new} карточек, {report.degraded} деградировало, "
+            f"{report.failed} не обработано"
+        )
+        return ("degraded" if report.degraded or report.failed else "ok"), detail
+
+    def digest() -> tuple[str, str]:
+        db = Database(paths.db_path)
+        try:
+            service = DigestService(config, db, env_path=paths.env_path)
+            doc = service.compose(undelivered=True)
+            if doc.is_empty:
+                return "empty", "новых карточек нет — дайджест не собран"
+            if deliver:
+                delivery = service.send(doc, trigger="run")
+                return "ok", (
+                    f"отправлено {delivery.items_count} карточек "
+                    f"в {delivery.parts} сообщении(ях), доставка #{delivery.id}"
+                )
+            body = service.render(doc)
+            print(body)
+            delivery = service.record(doc, body, trigger="run")
+            return "ok", f"напечатано {delivery.items_count} карточек, доставка #{delivery.id} без отправки"
+        finally:
+            db.close()
+
+    result = PipelineRun(config, paths).run(
+        collect=collect,
+        process=process,
+        digest=digest,
+        do_collect=not args.no_collect,
+        do_process=not args.no_process,
+        do_digest=not args.no_digest,
+    )
+    if result.locked:
+        return 0
+    for step in result.steps:
+        print(f"{step.name:8} {step.status:9} {step.detail}", file=sys.stderr)
+    return result.exit_code
+
+
+def _cmd_watchdog(args, config: Config, paths: ProjectPaths) -> int:
+    """Сторож для cron: молчит, пока всё хорошо; иначе ALERT (и Telegram, если включено)."""
+    db = Database(paths.db_path)
+    try:
+        watchdog = Watchdog(config, db, bot=TelegramBot(config.telegram, paths.env_path))
+        if args.json:
+            report = watchdog.run_checks()
+            print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+            return 0 if report.overall == "healthy" else 1
+        code, _ = watchdog.run(paths.data(".last_alert_hash"))
+        return code
+    finally:
+        db.close()
+
+
 def _cmd_status(args, config: Config, paths: ProjectPaths) -> int:
     db, feed = _feed_service(config, paths)
     try:
@@ -1595,6 +1678,25 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="collection and processing health").set_defaults(
         func=_cmd_status
     )
+
+    p = sub.add_parser(
+        "run", help="cron entry point: collect → process → digest (Telegram or stdout), with a lock"
+    )
+    p.add_argument("--limit", type=int, help="documents to process this run")
+    p.add_argument("--no-collect", action="store_true", help="skip polling the sources")
+    p.add_argument("--no-process", action="store_true", help="skip the model")
+    p.add_argument("--no-digest", action="store_true", help="skip the digest")
+    p.add_argument(
+        "--no-deliver", action="store_true",
+        help="print the digest instead of sending it even if telegram.deliver is on",
+    )
+    p.set_defaults(func=_cmd_run)
+
+    p = sub.add_parser(
+        "watchdog", help="health of the pipeline for cron: silent when fine, ALERT block otherwise"
+    )
+    p.add_argument("--json", action="store_true", help="print the full report as JSON")
+    p.set_defaults(func=_cmd_watchdog)
 
     p = sub.add_parser("item", help="one card: summary, entities, sources, history")
     p.add_argument("id", type=int)
