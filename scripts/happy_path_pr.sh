@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 hub() { uv run python -m src "$@"; }
 have_key() { [ -n "${TAVILY_API:-}" ] || grep -Eq '^TAVILY_API=.+' .env 2>/dev/null; }
 
-echo "▶ 1. Пул источников из context/sources_for_company.md: СМИ, регуляторы, Telegram-зеркала"
+echo "▶ 1. Пул источников из sources.json: СМИ, регуляторы, Telegram-зеркала"
 hub sources seed
 
 echo "▶ 2. Первый сбор: RSS, sitemap, t.me/s/ (окно 72 ч, до 50 материалов с источника)"

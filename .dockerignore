@@ -25,8 +25,15 @@ data/
 specs/
 tests/
 docs/
-context/
 scripts/
+.github/
+Makefile
+*.sh
+
+# Другие части репозитория: фронтенд собирается своим Dockerfile, дайджест в образ API не входит
+frontend/
+news_digest/
+prompts/
 docker-compose*.yaml
 *.md
 !README.md

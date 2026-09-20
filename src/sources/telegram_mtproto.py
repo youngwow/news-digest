@@ -34,7 +34,7 @@ log = get_logger("telegram.mtproto")
 LOGIN_HINT = "run `python -m src telegram login`"
 NO_SESSION = f"no Telegram session: {LOGIN_HINT}"
 FILE_PREFIX = "file:"  # attachments hold URLs; MTProto files have a name but no public URL
-DEVICE_MODEL = "ai-analytics-hub"
+DEVICE_MODEL = "news-digest"
 
 
 class MtprotoError(Exception):

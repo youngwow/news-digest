@@ -410,7 +410,7 @@ class Settings(BaseSettings):
         extra="ignore",  # в реальном .env лежат ключи, которые здесь не моделируются
     )
 
-    app_name: str = "ai-analytics-hub"
+    app_name: str = "news-digest"
     environment: Literal["local", "dev", "prod"] = "local"
     debug: bool = False
 

@@ -1385,7 +1385,7 @@ def _feed_filter_args(parser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m src", description="ai-analytics-hub — сбор данных (task 1.1)"
+        prog="python -m src", description="news-digest — платформа: сбор, обработка, лента, API"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

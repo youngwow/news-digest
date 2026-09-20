@@ -33,7 +33,7 @@ def test_liveness_is_ok_with_empty_checks(client):
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "app": "ai-analytics-hub",
+        "app": "news-digest",
         "version": __version__,
         "environment": "local",
         "checks": {},
@@ -78,7 +78,7 @@ def test_readiness_is_503_and_degraded_when_the_repository_fails(client, monkeyp
     assert response.headers["content-type"] == "application/json"
     body = response.json()
     assert (body["status"], body["checks"]) == ("degraded", {"repository": check})
-    assert HealthResponse.model_validate(body).app == "ai-analytics-hub"
+    assert HealthResponse.model_validate(body).app == "news-digest"
 
 
 # ── сервис без HTTP ────────────────────────────────────────────────────────

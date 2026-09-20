@@ -10,7 +10,7 @@ from ..models import CompanyProfile
 
 DEFAULT_NAME = "ООО «Цифра» (GS Labs)"
 
-# Facts from context/company_info.md and context/sources_for_company.md.
+# Facts about the case company, from the case brief (the demo profile; `profile set` replaces it).
 DEFAULT_PAYLOAD: dict = {
     "industry": "ИТ, разработка программного обеспечения для платного и спутникового ТВ",
     "products": [

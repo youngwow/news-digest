@@ -10,7 +10,7 @@ have_key() { [ -n "${TAVILY_API:-}" ] || grep -Eq '^TAVILY_API=.+' .env 2>/dev/n
 # id источника по фрагменту названия из `sources list`
 src_id() { hub sources list | awk -v pat="$1" '$0 ~ pat {print $1; exit}'; }
 
-echo "▶ 1. Пул источников из context/sources_for_company.md"
+echo "▶ 1. Пул источников из sources.json"
 hub sources seed
 
 echo "▶ 2. Сбор: официальное опубликование (pravo.gov.ru — Правительство, ФОИВ, Президент), government.ru,"

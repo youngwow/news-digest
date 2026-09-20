@@ -2,7 +2,7 @@
 
 The frontend implements the HTTP surface currently defined in `src/api/routes/` at repository level. The frontend integration follows the existing backend contracts. The separately authorized LLM speed improvement changes the prompt and sets processing concurrency to three for Ollama Pro. All paths below are relative to `/api/v1`.
 
-## Mapping to context/task.md
+## Mapping to the case requirements (tasks 1.1–1.4)
 
 | Requirement | Frontend implementation | Backend dependency / limit |
 | --- | --- | --- |
