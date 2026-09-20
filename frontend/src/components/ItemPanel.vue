@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { api } from '../api/client'
 import type { ItemCard, ItemType, ItemUpdate, Priority } from '../api/types'
 import { useRemote } from '../composables/remote'
 import { CATEGORIES, EDIT_REASONS, ENTITY_ROLES, NPA_STATUSES, PRIORITIES, TYPES, VISIBILITY } from '../data/dashboard'
+import { useDashboard } from '../composables/dashboard'
 import { formatDate, safeUrl, splitTags } from '../utils/dashboard'
 import AppModal from './AppModal.vue'
 const props = defineProps<{ id: number }>(); const emit = defineEmits<{ close: []; changed: [] }>()
+const { filters } = useDashboard()
+// Словарь рубрик — из config.yaml через /filters; первый такой тег карточки и есть её рубрика.
+const categories = computed(() => filters.value?.categories ?? CATEGORIES)
 const { data: card, loading, error, run } = useRemote<ItemCard | null>(null)
 const editing = ref(false); const busy = ref(false); const actionError = ref(''); const message = ref('')
 const draft = ref({ title: '', summary: '', type: 'news' as ItemType, npa_status: '', priority: 'medium' as Priority, tags: '', category: '', edit_reason: 'other' })
@@ -26,7 +30,7 @@ watch(() => props.id, () => { editing.value = false; void load() }, { immediate:
 function edit() {
   if (!card.value) return
   const item = card.value.item
-  const category = item.tags.find(tag => CATEGORIES.includes(tag)) || ''
+  const category = item.tags.find(tag => categories.value.includes(tag)) || ''
   draft.value = { title: item.title || '', summary: item.summary || '', type: item.type, npa_status: item.npa_status || 'анонс', priority: item.priority, tags: item.tags.filter(tag => tag !== category).join(', '), category, edit_reason: 'other' }
   editing.value = true
 }
@@ -64,7 +68,7 @@ async function revisions() {
       <div class="flex gap-2 flex-wrap text-[11px] text-muted mb-3"><span>#{{ id }}</span><span>{{ TYPES[card.item.type] }}</span><span>{{ VISIBILITY[card.item.visibility] }}</span><span>{{ formatDate(card.item.published_at, true) }}</span><a v-if="safeUrl(card.canonical_url)" class="text-link" :href="safeUrl(card.canonical_url)" target="_blank" rel="noopener noreferrer">Оригинал ↗</a></div>
       <form v-if="editing" @submit.prevent="save" @keydown.esc.stop="editing = false"><fieldset :disabled="busy || loading" class="space-y-3">
         <label class="field-label">Заголовок<input v-model="draft.title" required class="form-control" /></label><label class="field-label">Саммари<textarea v-model="draft.summary" required rows="5" class="form-control" /></label>
-        <div class="form-grid"><label class="field-label">Тип<select v-model="draft.type" class="form-control"><option v-for="(label, key) in TYPES" :key="key" :value="key">{{ label }}</option></select></label><label class="field-label">Приоритет<select v-model="draft.priority" class="form-control"><option v-for="(label, key) in PRIORITIES" :key="key" :value="key">{{ label }}</option></select></label><label v-if="draft.type === 'npa'" class="field-label">Статус НПА<select v-model="draft.npa_status" class="form-control"><option v-for="status in NPA_STATUSES" :key="status">{{ status }}</option></select></label><label class="field-label">Категория<select v-model="draft.category" class="form-control"><option value="">Не указана</option><option v-for="category in CATEGORIES" :key="category">{{ category }}</option></select></label></div>
+        <div class="form-grid"><label class="field-label">Тип<select v-model="draft.type" class="form-control"><option v-for="(label, key) in TYPES" :key="key" :value="key">{{ label }}</option></select></label><label class="field-label">Приоритет<select v-model="draft.priority" class="form-control"><option v-for="(label, key) in PRIORITIES" :key="key" :value="key">{{ label }}</option></select></label><label v-if="draft.type === 'npa'" class="field-label">Статус НПА<select v-model="draft.npa_status" class="form-control"><option v-for="status in NPA_STATUSES" :key="status">{{ status }}</option></select></label><label class="field-label">Категория<select v-model="draft.category" class="form-control"><option value="">Не указана</option><option v-for="category in categories" :key="category">{{ category }}</option></select></label></div>
         <label class="field-label">Дополнительные теги через запятую<input v-model="draft.tags" class="form-control" /></label><label class="field-label">Причина правки<select v-model="draft.edit_reason" class="form-control"><option v-for="(label, key) in EDIT_REASONS" :key="key" :value="key">{{ label }}</option></select></label><div class="flex gap-2"><button class="primary-button" type="submit">Сохранить</button><button class="secondary-button" type="button" @click="editing = false">Отмена</button></div>
       </fieldset></form>
       <template v-else><h2 class="font-semibold text-[15px]">{{ card.item.title || 'Без заголовка' }}</h2><p class="whitespace-pre-line text-[13px] my-3">{{ card.item.summary || 'Саммари ещё не подготовлено' }}</p><div class="flex flex-wrap gap-1 mb-3"><span v-for="tag in card.item.tags" :key="tag" class="tag">{{ tag }}</span></div><button class="outline-button" :disabled="busy" @click="edit">Редактировать материал</button></template>

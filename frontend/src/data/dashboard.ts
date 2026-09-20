@@ -4,7 +4,8 @@ export const TYPES: Record<string, string> = { news: 'Новости', npa: 'Н�
 export const SOURCE_TYPES: Record<string, string> = { rss: 'RSS', telegram: 'Telegram', sitemap: 'Sitemap', html: 'Сайт', search: 'Поиск', manual: 'Вручную' }
 export const SOURCE_STATUSES: Record<string, string> = { active: 'Активен', paused: 'Пауза', error: 'Ошибка', deleted: 'Удалён' }
 export const INTERVALS: Record<string, string> = { '15m': '15 минут', '1h': '1 час', '6h': '6 часов', '24h': '24 часа' }
-export const CATEGORIES = ['регуляторика', 'репутация', 'конкуренты', 'тренды', 'господдержка/льготы']
+// Рубрики приходят из API (`/filters` → categories, словарь config.yaml); это запасной список для офлайна.
+export const CATEGORIES: string[] = []
 export const NPA_STATUSES = ['анонс', 'разработка', 'внесён', 'рассмотрение', 'принят', 'действует', 'архив']
 export const EDIT_REASONS: Record<string, string> = { hallucination: 'Неточность ИИ', wrong_focus: 'Изменение акцента', wrong_priority: 'Неверный приоритет', other: 'Другое' }
 export const VISIBILITY: Record<string, string> = { visible: 'В ленте', hidden_feed: 'Скрыт из ленты', hidden_digest: 'Исключён из дайджеста', deleted: 'Удалён' }

@@ -85,6 +85,8 @@ class FeedService:
         return {
             "sources": sources,
             "tags": self.repository.tags_in_use() or list(self.config.categories.order),
+            # Словарь рубрик как он задан в config.yaml — для выпадающего списка «Категория».
+            "categories": list(self.config.categories.order),
             "npa_statuses": list(NPA_STATUSES),
             "priorities": list(PRIORITIES),
             "types": list(ITEM_TYPES),

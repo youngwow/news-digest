@@ -450,6 +450,7 @@ class FilterSourceEntry(BaseModel):
 class FiltersResponse(BaseModel):
     sources: list[FilterSourceEntry]
     tags: list[str]
+    categories: list[str] = Field(default_factory=list)  # словарь рубрик из config.yaml
     npa_statuses: list[str]
     priorities: list[str]
     types: list[str]

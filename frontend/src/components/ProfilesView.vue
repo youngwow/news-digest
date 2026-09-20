@@ -8,14 +8,14 @@ import { formatDate } from '../utils/dashboard'
 const store = useDashboard()
 const { data, error, loading, run } = useRemote<{ profiles: CompanyProfile[]; active: CompanyProfile } | null>(null)
 const fields = [
-  { key: 'industry', label: 'Отрасль', list: false },
-  { key: 'products', label: 'Продукты', list: true },
+  { key: 'industry', label: 'Сфера интересов', list: false },
+  { key: 'products', label: 'Продукты и проекты', list: true },
   { key: 'stack', label: 'Технологии и направления', list: true },
-  { key: 'regime', label: 'Налоговый и аккредитационный режим', list: false },
+  { key: 'regime', label: 'Режим (налоговый, аккредитация)', list: false },
   { key: 'regulators', label: 'Регуляторы', list: true },
   { key: 'competitors', label: 'Конкуренты', list: true },
   { key: 'topics', label: 'Ключевые темы', list: true },
-  { key: 'negative_facets', label: 'Не относится к компании', list: true },
+  { key: 'negative_facets', label: 'Не относится к профилю', list: true },
 ]
 const selected = ref<CompanyProfile | null>(null); const editorOpen = ref(false)
 const name = ref(''); const values = ref<Record<string, string>>({}); let original: Record<string, string> = {}
@@ -67,7 +67,7 @@ onMounted(() => { void refresh() })
 </script>
 <template>
   <div class="view-column">
-    <div class="toolbar gap-3 py-3"><div class="flex-1"><h2 class="font-semibold">Профили компании</h2><p class="text-muted text-[12px]">Определяют, какие новости и НПА важны для вашего бизнеса.</p></div><button class="outline-button" :disabled="busy" @click="edit(null)">Создать профиль</button><button class="text-link" :disabled="loading || busy" @click="refresh">Обновить профили</button></div>
+    <div class="toolbar gap-3 py-3"><div class="flex-1"><h2 class="font-semibold">Профили читателя</h2><p class="text-muted text-[12px]">Определяют, какие новости и НПА важны именно вам: приоритет карточки считается относительно активного профиля.</p></div><button class="outline-button" :disabled="busy" @click="edit(null)">Создать профиль</button><button class="text-link" :disabled="loading || busy" @click="refresh">Обновить профили</button></div>
     <p v-if="error || actionError" role="alert" class="feedback-bar">{{ actionError || error }}</p><p v-if="message" role="status" class="feedback-bar">{{ message }}</p>
     <div class="table-scroll p-4 space-y-4">
       <p v-if="loading && !data" role="status">Загрузка профилей…</p>

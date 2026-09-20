@@ -10,7 +10,7 @@ describe('company profiles', () => {
   it('loads the active profile and edits a new version without losing extra payload fields', async () => {
     await h.launch('#profiles'); expect(calls('/profiles/active', 'GET')).toHaveLength(1)
     await h.click(profile.name); expect(calls('/profiles/1', 'GET')).toHaveLength(1)
-    await h.field('Продукты', 'Первый\nВторой\nПервый'); await h.click('Сохранить профиль')
+    await h.field('Продукты и проекты', 'Первый\nВторой\nПервый'); await h.click('Сохранить профиль')
     expect(last('/profiles').body).toEqual({ name: profile.name, payload: { ...profile.payload, products: ['Первый', 'Второй'] } })
     expect(h.app().text()).toContain('Профиль сохранён · версия 3')
   })
@@ -19,7 +19,7 @@ describe('company profiles', () => {
     await h.click('Сохранить профиль'); expect(calls('/profiles')).toHaveLength(0)
     expect(h.app().text()).toContain('Заполните хотя бы одно поле')
     h.handle(call => call.method === 'POST' && call.url.pathname === '/api/v1/profiles' ? json({ detail: 'Профиль отклонён' }, 422) : undefined)
-    await h.field('Отрасль', 'Разработка ПО'); await h.click('Сохранить профиль')
+    await h.field('Сфера интересов', 'Разработка ПО'); await h.click('Сохранить профиль')
     expect(last('/profiles').body).toEqual({ name: 'Новая компания', payload: { industry: 'Разработка ПО' } })
     expect(h.app().text()).toContain('Профиль отклонён'); expect(h.app().get('textarea').element.value).toBe('Разработка ПО')
   })
@@ -29,7 +29,7 @@ describe('company profiles', () => {
     expect(calls('/profiles/2/default')).toHaveLength(1)
   })
   it('prevents accidental overwrite when a new profile name already exists', async () => {
-    await h.launch('#profiles'); await h.click('Создать профиль'); await h.field('Название профиля', profile.name); await h.field('Отрасль', 'Новая отрасль'); await h.click('Сохранить профиль')
+    await h.launch('#profiles'); await h.click('Создать профиль'); await h.field('Название профиля', profile.name); await h.field('Сфера интересов', 'Новая отрасль'); await h.click('Сохранить профиль')
     expect(calls('/profiles')).toHaveLength(0); expect(h.app().text()).toContain('Откройте его для редактирования')
   })
 })

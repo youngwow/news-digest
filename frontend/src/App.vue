@@ -18,7 +18,7 @@ const nav: { id: Section; label: string; title: string; icon: string }[] = [
   { id: 'digest', label: 'Дайджест', title: 'Дайджест', icon: 'digest' },
   { id: 'sources', label: 'Источники', title: 'Источники данных', icon: 'sources' },
   { id: 'status', label: 'Сбор и обработка', title: 'Сбор и обработка', icon: 'refresh' },
-  { id: 'profiles', label: 'Профиль компании', title: 'Профили компании', icon: 'sources' },
+  { id: 'profiles', label: 'Профиль читателя', title: 'Профили читателя', icon: 'sources' },
 ]
 const views = { feed: NewsFeed, npa: NpaTracker, digest: DigestView, sources: SourcesPanel, status: StatusView, profiles: ProfilesView }
 const currentHash = (): Section => nav.some(item => item.id === location.hash.slice(1)) ? location.hash.slice(1) as Section : 'feed'
@@ -29,7 +29,7 @@ function syncHash() { const next = currentHash(); if (section.value !== next) { 
 function dismiss(event: KeyboardEvent) { if (event.key === 'Escape') { mobileNav.value = false; notifications.value = false } }
 function focusContent() { document.getElementById('main-content')?.focus() }
 watch(dark, value => document.documentElement.classList.toggle('dark', value), { immediate: true })
-watch(title, value => { document.title = `${value} · ИИ-индустрия` }, { immediate: true })
+watch(title, value => { document.title = `${value} · news-digest` }, { immediate: true })
 onMounted(() => { void store.refresh(); window.addEventListener('hashchange', syncHash); window.addEventListener('keydown', dismiss) })
 onUnmounted(() => { window.removeEventListener('hashchange', syncHash); window.removeEventListener('keydown', dismiss) })
 </script>
@@ -38,7 +38,7 @@ onUnmounted(() => { window.removeEventListener('hashchange', syncHash); window.r
     <a href="#main-content" class="skip-link" @click.prevent="focusContent">Перейти к содержимому</a>
     <button v-if="mobileNav" class="sidebar-scrim" aria-label="Закрыть навигацию" @click="mobileNav = false" />
     <aside id="sidebar" class="sidebar" :class="{ 'is-open': mobileNav }">
-      <div class="flex items-center gap-2.5 px-4 py-3.5 border-b"><div class="logo-mark"><AppIcon name="logo" /></div><div><div class="font-semibold text-[12px] leading-tight">Мониторинг</div><div class="text-[10px] text-muted">ИИ-индустрия · ЦА</div></div></div>
+      <div class="flex items-center gap-2.5 px-4 py-3.5 border-b"><div class="logo-mark"><AppIcon name="logo" /></div><div><div class="font-semibold text-[12px] leading-tight">news-digest</div><div class="text-[10px] text-muted">лента и дайджест</div></div></div>
       <nav class="flex-1 py-2 px-2" aria-label="Основная навигация"><div class="section-label px-2 py-1.5">Разделы</div><a v-for="item in nav" :key="item.id" :href="`#${item.id}`" class="nav-item" :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click.prevent="navigate(item.id)"><AppIcon :name="item.icon" /><span class="flex-1">{{ item.label }}</span><span v-if="item.id === 'status' && status?.unprocessed" class="nav-badge">{{ status.unprocessed }}</span></a></nav>
       <div class="px-4 py-3 border-t text-[11px] text-muted"><div class="flex items-center gap-1.5"><span class="status-dot" :style="{ background: health?.status === 'ok' ? '#22c55e' : '#ef4444' }" />{{ loading ? 'Подключение…' : health?.status === 'ok' ? 'Сервер подключён' : health?.status === 'degraded' ? 'Сервер не готов' : 'Нет подключения' }}</div><p v-if="status" class="mt-1">{{ activeSources }} активных источников</p><p class="text-[10px] mt-1">Последний сбор: {{ formatDate(status?.last_collect_at, true) }}</p></div>
       <div class="px-4 py-3 border-t text-[11px] text-muted">Рабочее пространство аналитика<br /><span class="text-[10px]">Вход в аккаунт — скоро</span></div>

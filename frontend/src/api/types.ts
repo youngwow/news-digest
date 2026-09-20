@@ -37,12 +37,12 @@ export interface SourceHealth { source: Source; documents: number; consecutive_f
 export interface Probe { resolved_type: string; feed_url: string; title: string; detection_method: string; suggested_poll_interval: string; already_exists: boolean; already_exists_source_id: number | null; preview: { title: string; url: string; published_at: string | null }[]; warnings: string[]; note: string }
 export interface Health { status: 'ok' | 'degraded'; app: string; version: string; environment: string; checks: Record<string, string> }
 export interface Status { last_collect_at: string | null; documents: number; items: number; unprocessed: number; sources: Record<string, number>; stale_sources: { id: number; name: string; overdue_minutes: number; consecutive_failures: number; last_error: string }[]; timezone: string }
-export interface Filters { sources: Pick<Source, 'id' | 'name' | 'kind' | 'category' | 'status'>[]; tags: string[]; npa_statuses: string[]; priorities: string[]; types: string[]; orders: string[]; timezone: string }
+export interface Filters { sources: Pick<Source, 'id' | 'name' | 'kind' | 'category' | 'status'>[]; tags: string[]; categories?: string[]; npa_statuses: string[]; priorities: string[]; types: string[]; orders: string[]; timezone: string }
 export interface Facets { total: number; by_priority: Record<string, number>; by_type: Record<string, number>; by_source: { source_id: number; name: string; count: number }[]; top_tags: { tag: string; count: number }[]; took_ms: number }
 export interface Feed { items: FeedItem[]; total: number; next_cursor: string | null; took_ms: number }
 export interface Documents { documents: { id: number; title: string | null; url: string; source_id: number; source_name: string | null; published_at: string | null; fetched_at: string | null; last_error: string; chars: number | null }[]; total: number; next_cursor: string | null; took_ms: number }
 export type DocumentQuery = Pick<FeedQuery, 'q' | 'source_id' | 'from' | 'to' | 'limit' | 'cursor'> & { order?: 'published' | 'fetched' }
-export interface Digest { title: string; generated_at: string; items: number; format: 'markdown' | 'json'; body: string }
+export interface Digest { title: string; generated_at: string; items: number; format: 'markdown' | 'json' | 'telegram'; body: string }
 export interface FeedQuery { q?: string; type?: string; npa_status?: string; priority?: string[]; tag?: string[]; source_id?: number[]; from?: string; to?: string; order?: string; limit?: number; cursor?: string; include_hidden?: boolean; archived?: 'exclude' | 'include' | 'only'; duplicate?: number }
 export interface ItemUpdate { title?: string; summary?: string; type?: ItemType; npa_status?: string; priority?: Priority; tags?: string[]; edit_reason?: string }
 export interface ItemCreate { title: string; url: string; raw_text: string; type: ItemType; npa_status?: string; published_at?: string; run_llm: boolean; force: boolean }
